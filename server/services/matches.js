@@ -8,9 +8,13 @@ import { AI_PLAYER_ID, isAiPlayer, computeAiMove } from './ai.js';
 function httpError(status,message,code='ERROR'){const e=new Error(message);e.status=status;e.code=code;return e;}
 const userPublic=(row,prefix)=>({id:row[`${prefix}_id`],name:row[`${prefix}_name`],avatarUrl:row[`${prefix}_avatar`],officeId:row[`${prefix}_office_id`],officeName:row[`${prefix}_office_name`]});
 
+const TURN_TIMEOUT_MS=30*1000;
+function setTurnDeadline(state){state.turnDeadline=Date.now()+TURN_TIMEOUT_MS;return state;}
+
 export async function createMatch(client,gameKey,player1Id,player2Id){
   if(player1Id===player2Id)throw httpError(400,'Không thể tự đấu với chính mình');
   const game=getGame(gameKey); const state=game.create();
+  setTurnDeadline(state);
   const [p1,p2]=crypto.randomInt(2)===0?[player1Id,player2Id]:[player2Id,player1Id];
   const id=crypto.randomUUID();
   await client.query('INSERT INTO matches(id,game_key,player1_id,player2_id,state) VALUES($1,$2,$3,$4,$5)',[id,gameKey,p1,p2,JSON.stringify(state)]);
@@ -33,6 +37,7 @@ export async function createAiMatch(userId,gameKey){
 
   const matchId=await withTransaction(async(client)=>{
     const state=game.create();
+    setTurnDeadline(state);
     const id=crypto.randomUUID();
     await client.query('INSERT INTO matches(id,game_key,player1_id,player2_id,state,is_ai) VALUES($1,$2,$3,$4,$5,1)',[id,gameKey,p1,p2,JSON.stringify(state)]);
 
@@ -41,6 +46,7 @@ export async function createAiMatch(userId,gameKey){
     if(state.turn===aiIndex){
       const aiResult=await computeAiMove(state,gameKey,aiIndex);
       if(aiResult.action){
+        setTurnDeadline(aiResult.state);
         await client.query('UPDATE matches SET state=$2,version=1 WHERE id=$1',[id,JSON.stringify(aiResult.state)]);
         await client.query('INSERT INTO match_events(match_id,version,actor_id,client_action_id,action_type,action) VALUES($1,1,$2,$3,$4,$5)',[id,AI_PLAYER_ID,`ai-open-${id}`,'move',JSON.stringify(aiResult.action)]);
       }
@@ -73,6 +79,7 @@ export function viewMatch(row,userId){
   return {
     id:row.id,gameKey:row.game_key,gameName:game.name,version:row.version,status:row.status,
     winnerId:row.winner_id,playerIndex,turn:row.state?.turn??null,
+    turnDeadline:row.state?.turnDeadline||null,
     players:[userPublic(row,'p1'),userPublic(row,'p2')],
     state:game.view(row.state,playerIndex),createdAt:row.created_at,finishedAt:row.finished_at
   };
@@ -103,6 +110,19 @@ export async function applyMatchAction({matchId,userId,clientActionId,expectedVe
     if(duplicate.rowCount)return matchId;
     if(row.status!=='active')throw httpError(409,'Trận đã kết thúc','MATCH_FINISHED');
     if(row.version!==expectedVersion)throw httpError(409,'State của bạn đã cũ','STALE_VERSION');
+
+    // --- Turn timeout check: if current turn player's time expired, they lose ---
+    const gameState=typeof row.state==='object'?row.state:{};
+    if(gameState.turnDeadline&&Date.now()>gameState.turnDeadline&&action.type!=='surrender'&&action.type!=='draw_offer'&&action.type!=='draw_accept'&&action.type!=='draw_decline'){
+      const timedOutPlayer=gameState.turn!=null?gameState.turn:playerIndex;
+      const winnerId2=timedOutPlayer===0?row.player2_id:row.player1_id;
+      const nextVersion=row.version+1;
+      await client.query(`UPDATE matches SET status='finished',winner_id=$2,version=$3,finished_at=UTC_TIMESTAMP() WHERE id=$1`,[matchId,winnerId2,nextVersion]);
+      await client.query('INSERT INTO match_events(match_id,version,actor_id,client_action_id,action_type,action) VALUES($1,$2,$3,$4,$5,$6)',[matchId,nextVersion,userId,clientActionId,'timeout',JSON.stringify({timedOutPlayer})]);
+      if(!row.is_ai)await updateRatings(client,row,timedOutPlayer===0?1:0);
+      finished=true;
+      return matchId;
+    }
 
     // --- Surrender branch ---
     if(action.type==='surrender'){
@@ -155,6 +175,7 @@ export async function applyMatchAction({matchId,userId,clientActionId,expectedVe
     try{applied=game.apply(row.state,action,playerIndex);}catch(error){if(error instanceof GameRuleError)throw httpError(400,error.message,error.code);throw error;}
     const nextVersion=row.version+1; let winnerId=null,status='active';
     if(applied.result){status='finished';finished=true;winnerId=applied.result.winnerIndex==null?null:(applied.result.winnerIndex===0?row.player1_id:row.player2_id);}
+    if(!applied.result)setTurnDeadline(applied.state);
     await client.query(`UPDATE matches SET state=$2,version=$3,status=$4,winner_id=$5,finished_at=CASE WHEN $4='finished' THEN UTC_TIMESTAMP() ELSE finished_at END WHERE id=$1`,[matchId,JSON.stringify(applied.state),nextVersion,status,winnerId]);
     await client.query('INSERT INTO match_events(match_id,version,actor_id,client_action_id,action_type,action) VALUES($1,$2,$3,$4,$5,$6)',[matchId,nextVersion,userId,clientActionId,String(action.type||'move').slice(0,40),JSON.stringify(action)]);
     if(applied.result&&!row.is_ai)await updateRatings(client,row,applied.result.winnerIndex);
@@ -197,20 +218,40 @@ export async function getPublicMatchResult(matchId){
 
 const MATCH_TIMEOUT_MS=25*60*1000;
 export async function checkMatchTimeout(matchId){
-  const {rows}=await pool.query(`SELECT * FROM matches WHERE id=$1 AND status='active' FOR UPDATE`,[matchId]);
+  const {rows}=await pool.query(`SELECT * FROM matches WHERE id=$1 AND status='active'`,[matchId]);
   const row=rows[0];if(!row)return null;
   const elapsed=Date.now()-new Date(row.created_at).getTime();
-  if(elapsed<MATCH_TIMEOUT_MS)return null;
-  // Match timed out — draw
-  await pool.query(`UPDATE matches SET status='finished',winner_id=NULL,finished_at=UTC_TIMESTAMP() WHERE id=$1 AND status='active'`,[matchId]);
-  if(!row.is_ai){
-    await withTransaction(async client=>{await updateRatings(client,row,null);});
-    await rewardPvpResult(matchId);
-    for(const id of [row.player1_id,row.player2_id])await evaluateAchievements(id);
-  }else{
-    const humanId=isAiPlayer(row.player1_id)?row.player2_id:row.player1_id;
-    await rewardPvpResultForHuman(matchId,humanId);
-    await evaluateAchievements(humanId);
+  const gameState=typeof row.state==='object'?row.state:{};
+  // Check turn timeout (30s per turn)
+  if(gameState.turnDeadline&&Date.now()>gameState.turnDeadline){
+    const timedOutPlayer=gameState.turn!=null?gameState.turn:0;
+    const winnerId=timedOutPlayer===0?row.player2_id:row.player1_id;
+    const changed=await pool.query(`UPDATE matches SET status='finished',winner_id=$2,version=version+1,finished_at=UTC_TIMESTAMP() WHERE id=$1 AND status='active'`,[matchId,winnerId]);
+    if(!changed.rowCount)return null;
+    if(!row.is_ai){
+      await withTransaction(async client=>{await updateRatings(client,row,timedOutPlayer===0?1:0);});
+      await rewardPvpResult(matchId);
+      for(const id of [row.player1_id,row.player2_id])await evaluateAchievements(id);
+    }else{
+      const humanId=isAiPlayer(row.player1_id)?row.player2_id:row.player1_id;
+      await rewardPvpResultForHuman(matchId,humanId);
+      await evaluateAchievements(humanId);
+    }
+    return {matchId,timeout:true,loserId:timedOutPlayer===0?row.player1_id:row.player2_id};
   }
-  return {matchId,draw:true};
+  // Check match timeout (25 min)
+  if(elapsed>=MATCH_TIMEOUT_MS){
+    await pool.query(`UPDATE matches SET status='finished',winner_id=NULL,finished_at=UTC_TIMESTAMP() WHERE id=$1 AND status='active'`,[matchId]);
+    if(!row.is_ai){
+      await withTransaction(async client=>{await updateRatings(client,row,null);});
+      await rewardPvpResult(matchId);
+      for(const id of [row.player1_id,row.player2_id])await evaluateAchievements(id);
+    }else{
+      const humanId=isAiPlayer(row.player1_id)?row.player2_id:row.player1_id;
+      await rewardPvpResultForHuman(matchId,humanId);
+      await evaluateAchievements(humanId);
+    }
+    return {matchId,draw:true};
+  }
+  return null;
 }

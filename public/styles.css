@@ -29,3 +29,5 @@
 .ai-badge{display:inline-flex;align-items:center;gap:3px;font-size:8px;font-weight:700;background:rgba(123,97,255,.15);border:1px solid rgba(123,97,255,.3);color:#c2b7ff;padding:2px 7px;border-radius:99px;margin-left:6px;vertical-align:middle;letter-spacing:.04em}
 
 .match-actions-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin-top:14px;width:100%;max-width:650px}.draw-btn{font-size:10px}.draw-offer-bar{display:flex;align-items:center;gap:10px;padding:10px 14px;border:1px solid rgba(255,207,90,.25);background:rgba(255,207,90,.08);border-radius:12px;font-size:10px;color:#ffd470;animation:drawPulse 1.5s ease infinite}.draw-offer-bar.pending{border-color:rgba(123,97,255,.2);background:rgba(123,97,255,.06);color:#c4b9ff;animation:none}@keyframes drawPulse{0%,100%{opacity:1}50%{opacity:.7}}
+
+.turn-countdown.urgent{color:#ff6178;background:rgba(255,97,120,.15);animation:urgentPulse .5s ease infinite alternate}@keyframes urgentPulse{from{transform:scale(1)}to{transform:scale(1.1)}}
