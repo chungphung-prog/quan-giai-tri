@@ -139,33 +139,49 @@ function generateCandidates(key, state, playerIndex) {
     }
 
     case 'chess': {
-      // For each piece owned by playerIndex, all possible destinations
+      // Generate moves using piece movement rules (no brute force)
       const WHITE = new Set(['♙', '♖', '♘', '♗', '♕', '♔']);
       const BLACK = new Set(['♟', '♜', '♞', '♝', '♛', '♚']);
       const ownSet = playerIndex === 0 ? WHITE : BLACK;
+      const colorOf = p => WHITE.has(p) ? 0 : BLACK.has(p) ? 1 : null;
       const candidates = [];
       for (let from = 0; from < 64; from++) {
-        if (ownSet.has(state.board[from])) {
-          for (let to = 0; to < 64; to++) {
-            if (from !== to) candidates.push({ from, to });
-          }
-        }
+        const p = state.board[from];
+        if (!ownSet.has(p)) continue;
+        const r = Math.floor(from / 8), c = from % 8;
+        const add = (rr, cc) => { if (rr >= 0 && rr <= 7 && cc >= 0 && cc <= 7) { const to = rr * 8 + cc; if (colorOf(state.board[to]) !== playerIndex) candidates.push({ from, to }); } };
+        const slide = (dirs) => { for (const [dr, dc] of dirs) { let rr = r + dr, cc2 = c + dc; while (rr >= 0 && rr <= 7 && cc2 >= 0 && cc2 <= 7) { const to = rr * 8 + cc2; if (state.board[to] == null) { candidates.push({ from, to }); } else { if (colorOf(state.board[to]) !== playerIndex) candidates.push({ from, to }); break; } rr += dr; cc2 += dc; } } };
+        if (p === '♙' || p === '♟') { const d = p === '♙' ? -1 : 1, start = p === '♙' ? 6 : 1; const nr = r + d; if (nr >= 0 && nr < 8) { if (state.board[nr * 8 + c] == null) { candidates.push({ from, to: nr * 8 + c }); if (r === start && state.board[(r + 2 * d) * 8 + c] == null) candidates.push({ from, to: (r + 2 * d) * 8 + c }); } for (const dc of [-1, 1]) { const cc2 = c + dc; if (cc2 >= 0 && cc2 < 8 && state.board[nr * 8 + cc2] != null && colorOf(state.board[nr * 8 + cc2]) !== playerIndex) candidates.push({ from, to: nr * 8 + cc2 }); } } }
+        else if (p === '♘' || p === '♞') for (const [dr, dc] of [[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]]) add(r + dr, c + dc);
+        else if (p === '♗' || p === '♝') slide([[1,1],[1,-1],[-1,1],[-1,-1]]);
+        else if (p === '♖' || p === '♜') slide([[1,0],[-1,0],[0,1],[0,-1]]);
+        else if (p === '♕' || p === '♛') slide([[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]);
+        else if (p === '♔' || p === '♚') for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]) add(r + dr, c + dc);
       }
       return candidates;
     }
 
     case 'xiangqi': {
-      // For each piece owned by playerIndex, all possible destinations
+      // Generate moves using piece movement rules (no brute force)
       const red = new Set(['帥', '仕', '相', '俥', '傌', '炮', '兵']);
       const black = new Set(['將', '士', '象', '車', '馬', '砲', '卒']);
       const ownSet = playerIndex === 0 ? red : black;
+      const sd = p => red.has(p) ? 0 : black.has(p) ? 1 : null;
+      const R2 = 10, C2 = 9;
       const candidates = [];
-      for (let from = 0; from < 90; from++) {
-        if (ownSet.has(state.board[from])) {
-          for (let to = 0; to < 90; to++) {
-            if (from !== to) candidates.push({ from, to });
-          }
-        }
+      for (let from = 0; from < R2 * C2; from++) {
+        const p = state.board[from];
+        if (!ownSet.has(p)) continue;
+        const r = Math.floor(from / C2), c = from % C2;
+        const tryAdd = (rr, cc) => { if (rr < 0 || rr >= R2 || cc < 0 || cc >= C2) return; const to = rr * C2 + cc; if (sd(state.board[to]) !== playerIndex) candidates.push({ from, to }); };
+        if ('車俥'.includes(p)) { for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) { let rr = r + dr, cc2 = c + dc; while (rr >= 0 && rr < R2 && cc2 >= 0 && cc2 < C2) { const to = rr * C2 + cc2; if (state.board[to] == null) { candidates.push({ from, to }); } else { if (sd(state.board[to]) !== playerIndex) candidates.push({ from, to }); break; } rr += dr; cc2 += dc; } } }
+        else if ('砲炮'.includes(p)) { for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) { let rr = r + dr, cc2 = c + dc, jumped = false; while (rr >= 0 && rr < R2 && cc2 >= 0 && cc2 < C2) { const to = rr * C2 + cc2; if (!jumped) { if (state.board[to] == null) candidates.push({ from, to }); else jumped = true; } else { if (state.board[to] != null) { if (sd(state.board[to]) !== playerIndex) candidates.push({ from, to }); break; } } rr += dr; cc2 += dc; } } }
+        else if ('馬傌'.includes(p)) { for (const [dr, dc, lr, lc] of [[2,1,1,0],[2,-1,1,0],[-2,1,-1,0],[-2,-1,-1,0],[1,2,0,1],[1,-2,0,-1],[-1,2,0,1],[-1,-2,0,-1]]) { if (state.board[(r + lr) * C2 + (c + lc)] != null) continue; tryAdd(r + dr, c + dc); } }
+        else if ('象相'.includes(p)) { const limit = p === '象' ? 4 : 5; for (const [dr, dc] of [[2,2],[2,-2],[-2,2],[-2,-2]]) { const rr = r + dr, cc2 = c + dc; if (rr < 0 || rr >= R2 || cc2 < 0 || cc2 >= C2) continue; if (p === '象' && rr > limit) continue; if (p === '相' && rr < limit) continue; if (state.board[(r + dr / 2) * C2 + (c + dc / 2)] != null) continue; tryAdd(rr, cc2); } }
+        else if ('士仕'.includes(p)) { const s = playerIndex; for (const [dr, dc] of [[1,1],[1,-1],[-1,1],[-1,-1]]) { const rr = r + dr, cc2 = c + dc; const inPalace = s === 1 ? rr <= 2 : rr >= 7; if (inPalace && cc2 >= 3 && cc2 <= 5) tryAdd(rr, cc2); } }
+        else if ('將帥'.includes(p)) { const s = playerIndex; for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) { const rr = r + dr, cc2 = c + dc; const inPalace = s === 1 ? rr <= 2 : rr >= 7; if (inPalace && cc2 >= 3 && cc2 <= 5) tryAdd(rr, cc2); } }
+        else if (p === '卒') { if (r < 5) tryAdd(r + 1, c); else { tryAdd(r + 1, c); tryAdd(r, c - 1); tryAdd(r, c + 1); } }
+        else if (p === '兵') { if (r > 4) tryAdd(r - 1, c); else { tryAdd(r - 1, c); tryAdd(r, c - 1); tryAdd(r, c + 1); } }
       }
       return candidates;
     }
@@ -197,9 +213,9 @@ function selectBestMove(game, state, aiPlayerIndex, legalMoves) {
     case 'caro':
       return heuristicCaro(game, state, aiPlayerIndex, legalMoves);
     case 'chess':
-      return heuristicChess(game, state, aiPlayerIndex, legalMoves);
+      return fastChessMove(game, state, aiPlayerIndex, legalMoves);
     case 'xiangqi':
-      return heuristicXiangqi(game, state, aiPlayerIndex, legalMoves);
+      return fastXiangqiMove(game, state, aiPlayerIndex, legalMoves);
     case 'rps':
     case 'battleship':
     case 'dots':
@@ -573,82 +589,36 @@ const CHESS_PIECE_VALUES = {
 const WHITE_PIECES = new Set(['♙', '♖', '♘', '♗', '♕', '♔']);
 const BLACK_PIECES = new Set(['♟', '♜', '♞', '♝', '♛', '♚']);
 
-function heuristicChess(game, state, aiPlayerIndex, legalMoves) {
-  // Evaluate each move with limited depth (1-ply lookahead + capture search)
-  let bestScore = -Infinity;
-  let bestMove = legalMoves[0];
-
-  // Limit evaluation to reasonable number of moves for performance
-  const movesToCheck = legalMoves.length > 80 ? shuffleAndTake(legalMoves, 80) : legalMoves;
-
-  for (const move of movesToCheck) {
-    try {
-      const applied = game.apply(state, move, aiPlayerIndex);
-      // If we captured king, this is instantly winning
-      if (applied.result && applied.result.winnerIndex === aiPlayerIndex) return move;
-
-      const score = -chessEvaluateWithDepth(game, applied.state, 1 - aiPlayerIndex, aiPlayerIndex, 2);
-      if (score > bestScore) {
-        bestScore = score;
-        bestMove = move;
-      }
-    } catch { continue; }
+function fastChessMove(game, state, aiPlayerIndex, legalMoves) {
+  // Fast 1-ply: prefer captures by piece value, then random
+  const captures = [], others = [];
+  for (const m of legalMoves) {
+    const target = state.board[m.to];
+    if (target != null) captures.push({ move: m, value: CHESS_PIECE_VALUES[target] || 0 });
+    else others.push(m);
   }
-  return bestMove;
+  // If can capture king, do it
+  for (const c of captures) if (c.value >= 20000) return c.move;
+  // Prefer highest value capture
+  if (captures.length) { captures.sort((a, b) => b.value - a.value); return captures[0].move; }
+  // Otherwise random
+  return randomChoice(others.length ? others : legalMoves);
 }
 
-function chessEvaluateWithDepth(game, state, currentPlayer, aiPlayerIndex, depth) {
-  if (depth === 0) return chessEvaluate(state, currentPlayer);
-
-  const ownSet = currentPlayer === 0 ? WHITE_PIECES : BLACK_PIECES;
-  const moves = [];
-  for (let from = 0; from < 64; from++) {
-    if (!ownSet.has(state.board[from])) continue;
-    for (let to = 0; to < 64; to++) {
-      if (from === to) continue;
-      // Only consider captures for quicker evaluation
-      if (state.board[to] != null && depth <= 1) {
-        moves.push({ from, to });
-      } else if (depth > 1) {
-        moves.push({ from, to });
-      }
-    }
+function fastXiangqiMove(game, state, aiPlayerIndex, legalMoves) {
+  // Fast 1-ply: prefer captures by piece value, then random
+  const captures = [], others = [];
+  for (const m of legalMoves) {
+    const target = state.board[m.to];
+    if (target != null) captures.push({ move: m, value: XIANGQI_VALUES[target] || 0 });
+    else others.push(m);
   }
-
-  // Limit to avoid timeout
-  const toCheck = moves.length > 30 ? shuffleAndTake(moves, 30) : moves;
-
-  let bestScore = chessEvaluate(state, currentPlayer);
-  for (const move of toCheck) {
-    try {
-      const applied = game.apply(state, move, currentPlayer);
-      if (applied.result && applied.result.winnerIndex === currentPlayer) return 99999;
-      const score = -chessEvaluateWithDepth(game, applied.state, 1 - currentPlayer, aiPlayerIndex, depth - 1);
-      if (score > bestScore) bestScore = score;
-    } catch { continue; }
-  }
-  return bestScore;
-}
-
-function chessEvaluate(state, forPlayer) {
-  let score = 0;
-  const ownSet = forPlayer === 0 ? WHITE_PIECES : BLACK_PIECES;
-  const oppSet = forPlayer === 0 ? BLACK_PIECES : WHITE_PIECES;
-
-  for (let i = 0; i < 64; i++) {
-    const piece = state.board[i];
-    if (piece == null) continue;
-    const value = CHESS_PIECE_VALUES[piece] || 0;
-    if (ownSet.has(piece)) {
-      score += value;
-      // Center control bonus
-      const r = Math.floor(i / 8), c = i % 8;
-      if (r >= 2 && r <= 5 && c >= 2 && c <= 5) score += 10;
-    } else if (oppSet.has(piece)) {
-      score -= value;
-    }
-  }
-  return score;
+  // If can capture general/king, do it
+  for (const c of captures) if (c.value >= 20000) return c.move;
+  // Prefer highest value capture
+  if (captures.length) { captures.sort((a, b) => b.value - a.value); return captures[0].move; }
+  // Otherwise random
+  return randomChoice(others.length ? others : legalMoves);
 }
 
 // ─── Xiangqi Heuristic ──────────────────────────────────────────────────────────
@@ -660,51 +630,10 @@ const XIANGQI_VALUES = {
 const RED_PIECES = new Set(['帥', '仕', '相', '俥', '傌', '炮', '兵']);
 const BLACK_XQ_PIECES = new Set(['將', '士', '象', '車', '馬', '砲', '卒']);
 
-function heuristicXiangqi(game, state, aiPlayerIndex, legalMoves) {
-  let bestScore = -Infinity;
-  let bestMove = legalMoves[0];
+// fastXiangqiMove is defined above — remove old heuristic
+// (heuristicXiangqi replaced by fastXiangqiMove in selectBestMove)
 
-  // Limit evaluation for performance
-  const movesToCheck = legalMoves.length > 80 ? shuffleAndTake(legalMoves, 80) : legalMoves;
-
-  for (const move of movesToCheck) {
-    try {
-      const applied = game.apply(state, move, aiPlayerIndex);
-      if (applied.result && applied.result.winnerIndex === aiPlayerIndex) return move;
-
-      const score = xiangqiEvaluate(applied.state, aiPlayerIndex);
-      if (score > bestScore) {
-        bestScore = score;
-        bestMove = move;
-      }
-    } catch { continue; }
-  }
-  return bestMove;
-}
-
-function xiangqiEvaluate(state, forPlayer) {
-  const C = 9;
-  let score = 0;
-  const ownSet = forPlayer === 0 ? RED_PIECES : BLACK_XQ_PIECES;
-  const oppSet = forPlayer === 0 ? BLACK_XQ_PIECES : RED_PIECES;
-
-  for (let i = 0; i < 90; i++) {
-    const piece = state.board[i];
-    if (piece == null) continue;
-    const value = XIANGQI_VALUES[piece] || 0;
-    if (ownSet.has(piece)) {
-      score += value;
-      // Center/forward bonus for attacking pieces
-      const r = Math.floor(i / C), c = i % C;
-      if (c >= 3 && c <= 5) score += 5;
-      // Pawns that have crossed the river get a bonus
-      if ((piece === '兵' && r <= 4) || (piece === '卒' && r >= 5)) score += 50;
-    } else if (oppSet.has(piece)) {
-      score -= value;
-    }
-  }
-  return score;
-}
+// xiangqiEvaluate removed — fastXiangqiMove uses direct capture preference
 
 // ─── Utility Functions ──────────────────────────────────────────────────────────
 
