@@ -14,7 +14,7 @@ function setTurnDeadline(state){state.turnDeadline=Date.now()+TURN_TIMEOUT_MS;re
 export async function createMatch(client,gameKey,player1Id,player2Id){
   if(player1Id===player2Id)throw httpError(400,'Không thể tự đấu với chính mình');
   const game=getGame(gameKey); const state=game.create();
-  setTurnDeadline(state);
+  state.ready=[false,false];state.lastMove=null;
   const [p1,p2]=crypto.randomInt(2)===0?[player1Id,player2Id]:[player2Id,player1Id];
   const id=crypto.randomUUID();
   await client.query('INSERT INTO matches(id,game_key,player1_id,player2_id,state) VALUES($1,$2,$3,$4,$5)',[id,gameKey,p1,p2,JSON.stringify(state)]);
@@ -37,6 +37,7 @@ export async function createAiMatch(userId,gameKey){
 
   const matchId=await withTransaction(async(client)=>{
     const state=game.create();
+    state.lastMove=null;
     setTurnDeadline(state);
     const id=crypto.randomUUID();
     await client.query('INSERT INTO matches(id,game_key,player1_id,player2_id,state,is_ai) VALUES($1,$2,$3,$4,$5,1)',[id,gameKey,p1,p2,JSON.stringify(state)]);
@@ -80,6 +81,8 @@ export function viewMatch(row,userId){
     id:row.id,gameKey:row.game_key,gameName:game.name,version:row.version,status:row.status,
     winnerId:row.winner_id,playerIndex,turn:row.state?.turn??null,
     turnDeadline:row.state?.turnDeadline||null,
+    lastMove:row.state?.lastMove||null,
+    ready:row.state?.ready||null,
     players:[userPublic(row,'p1'),userPublic(row,'p2')],
     state:game.view(row.state,playerIndex),createdAt:row.created_at,finishedAt:row.finished_at
   };
@@ -111,8 +114,28 @@ export async function applyMatchAction({matchId,userId,clientActionId,expectedVe
     if(row.status!=='active')throw httpError(409,'Trận đã kết thúc','MATCH_FINISHED');
     if(row.version!==expectedVersion)throw httpError(409,'State của bạn đã cũ','STALE_VERSION');
 
-    // --- Turn timeout check: if current turn player's time expired, they lose ---
+    // --- Ready action: player confirms ready to start ---
     const gameState=typeof row.state==='object'?row.state:{};
+    if(action.type==='ready'){
+      if(!gameState.ready)return matchId;
+      if(gameState.ready[playerIndex])return matchId;
+      gameState.ready[playerIndex]=true;
+      const nextVersion=row.version+1;
+      if(gameState.ready[0]&&gameState.ready[1]){
+        delete gameState.ready;
+        setTurnDeadline(gameState);
+      }
+      await client.query(`UPDATE matches SET state=$2,version=$3 WHERE id=$1`,[matchId,JSON.stringify(gameState),nextVersion]);
+      await client.query('INSERT INTO match_events(match_id,version,actor_id,client_action_id,action_type,action) VALUES($1,$2,$3,$4,$5,$6)',[matchId,nextVersion,userId,clientActionId,'ready',JSON.stringify(action)]);
+      return matchId;
+    }
+
+    // --- Block moves if not both ready yet ---
+    if(gameState.ready&&(!gameState.ready[0]||!gameState.ready[1])&&action.type!=='surrender'&&action.type!=='draw_offer'&&action.type!=='draw_accept'&&action.type!=='draw_decline'){
+      throw httpError(400,'Đợi cả hai sẵn sàng','NOT_READY');
+    }
+
+    // --- Turn timeout check: if current turn player's time expired, they lose ---
     if(gameState.turnDeadline&&Date.now()>gameState.turnDeadline&&action.type!=='surrender'&&action.type!=='draw_offer'&&action.type!=='draw_accept'&&action.type!=='draw_decline'){
       const timedOutPlayer=gameState.turn!=null?gameState.turn:playerIndex;
       const winnerId2=timedOutPlayer===0?row.player2_id:row.player1_id;
@@ -177,6 +200,7 @@ export async function applyMatchAction({matchId,userId,clientActionId,expectedVe
     const nextVersion=row.version+1; let winnerId=null,status='active';
     if(applied.result){status='finished';finished=true;winnerId=applied.result.winnerIndex==null?null:(applied.result.winnerIndex===0?row.player1_id:row.player2_id);}
     if(!applied.result)setTurnDeadline(applied.state);
+    applied.state.lastMove={player:playerIndex,action};
     await client.query(`UPDATE matches SET state=$2,version=$3,status=$4,winner_id=$5,finished_at=CASE WHEN $4='finished' THEN UTC_TIMESTAMP() ELSE finished_at END WHERE id=$1`,[matchId,JSON.stringify(applied.state),nextVersion,status,winnerId]);
     await client.query('INSERT INTO match_events(match_id,version,actor_id,client_action_id,action_type,action) VALUES($1,$2,$3,$4,$5,$6)',[matchId,nextVersion,userId,clientActionId,String(action.type||'move').slice(0,40),JSON.stringify(action)]);
     if(applied.result&&!row.is_ai)await updateRatings(client,row,applied.result.winnerIndex);
