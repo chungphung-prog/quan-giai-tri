@@ -55,8 +55,8 @@ export function isAiMatch(matchRow){return Boolean(matchRow.is_ai);}
 export async function getMatchForUser(matchId,userId){
   const {rows}=await pool.query(`
     SELECT m.*,
-      p1.display_name p1_name,p1.avatar_url p1_avatar,p1.office_group_id p1_office_id,o1.name p1_office_name,
-      p2.display_name p2_name,p2.avatar_url p2_avatar,p2.office_group_id p2_office_id,o2.name p2_office_name
+      p1.id p1_id,p1.display_name p1_name,p1.avatar_url p1_avatar,p1.office_group_id p1_office_id,o1.name p1_office_name,
+      p2.id p2_id,p2.display_name p2_name,p2.avatar_url p2_avatar,p2.office_group_id p2_office_id,o2.name p2_office_name
     FROM matches m
     JOIN users p1 ON p1.id=m.player1_id LEFT JOIN office_groups o1 ON o1.id=p1.office_group_id
     JOIN users p2 ON p2.id=m.player2_id LEFT JOIN office_groups o2 ON o2.id=p2.office_group_id
