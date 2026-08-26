@@ -117,6 +117,40 @@ export async function applyMatchAction({matchId,userId,clientActionId,expectedVe
       return matchId;
     }
 
+    // --- Draw offer branch (PvP only, not AI) ---
+    if(action.type==='draw_offer'){
+      if(row.is_ai)throw httpError(400,'Không thể cầu hòa với AI','DRAW_NOT_ALLOWED');
+      const nextVersion=row.version+1;
+      const newState=typeof row.state==='object'?{...row.state,drawOffer:playerIndex}:row.state;
+      await client.query(`UPDATE matches SET state=$2,version=$3 WHERE id=$1`,[matchId,JSON.stringify(newState),nextVersion]);
+      await client.query('INSERT INTO match_events(match_id,version,actor_id,client_action_id,action_type,action) VALUES($1,$2,$3,$4,$5,$6)',[matchId,nextVersion,userId,clientActionId,'draw_offer',JSON.stringify(action)]);
+      return matchId;
+    }
+
+    // --- Draw accept branch ---
+    if(action.type==='draw_accept'){
+      if(row.is_ai)throw httpError(400,'Không thể cầu hòa với AI','DRAW_NOT_ALLOWED');
+      const gameState=typeof row.state==='object'?row.state:{};
+      if(gameState.drawOffer==null||gameState.drawOffer===playerIndex)throw httpError(400,'Không có lời cầu hòa','NO_DRAW_OFFER');
+      const nextVersion=row.version+1;
+      await client.query(`UPDATE matches SET status='finished',winner_id=NULL,version=$2,finished_at=UTC_TIMESTAMP() WHERE id=$1`,[matchId,nextVersion]);
+      await client.query('INSERT INTO match_events(match_id,version,actor_id,client_action_id,action_type,action) VALUES($1,$2,$3,$4,$5,$6)',[matchId,nextVersion,userId,clientActionId,'draw_accept',JSON.stringify(action)]);
+      await updateRatings(client,row,null);
+      finished=true;
+      return matchId;
+    }
+
+    // --- Draw decline branch ---
+    if(action.type==='draw_decline'){
+      const gameState=typeof row.state==='object'?row.state:{};
+      if(gameState.drawOffer==null)throw httpError(400,'Không có lời cầu hòa','NO_DRAW_OFFER');
+      const nextVersion=row.version+1;
+      const newState={...gameState};delete newState.drawOffer;
+      await client.query(`UPDATE matches SET state=$2,version=$3 WHERE id=$1`,[matchId,JSON.stringify(newState),nextVersion]);
+      await client.query('INSERT INTO match_events(match_id,version,actor_id,client_action_id,action_type,action) VALUES($1,$2,$3,$4,$5,$6)',[matchId,nextVersion,userId,clientActionId,'draw_decline',JSON.stringify(action)]);
+      return matchId;
+    }
+
     const game=getGame(row.game_key);let applied;
     try{applied=game.apply(row.state,action,playerIndex);}catch(error){if(error instanceof GameRuleError)throw httpError(400,error.message,error.code);throw error;}
     const nextVersion=row.version+1; let winnerId=null,status='active';
@@ -159,4 +193,24 @@ export async function listRecentMatches(userId,limit=30){
 export async function getPublicMatchResult(matchId){
   const {rows}=await pool.query(`SELECT m.id,m.game_key,m.winner_id,m.finished_at,p1.id p1_id,p1.display_name p1_name,p1.avatar_url p1_avatar,p2.id p2_id,p2.display_name p2_name,p2.avatar_url p2_avatar FROM matches m JOIN users p1 ON p1.id=m.player1_id JOIN users p2 ON p2.id=m.player2_id WHERE m.id=$1 AND m.status='finished'`,[matchId]);
   const r=rows[0];if(!r)return null;return {id:r.id,gameKey:r.game_key,winnerId:r.winner_id,finishedAt:r.finished_at,players:[{id:r.p1_id,name:r.p1_name,avatarUrl:r.p1_avatar},{id:r.p2_id,name:r.p2_name,avatarUrl:r.p2_avatar}]};
+}
+
+const MATCH_TIMEOUT_MS=25*60*1000;
+export async function checkMatchTimeout(matchId){
+  const {rows}=await pool.query(`SELECT * FROM matches WHERE id=$1 AND status='active' FOR UPDATE`,[matchId]);
+  const row=rows[0];if(!row)return null;
+  const elapsed=Date.now()-new Date(row.created_at).getTime();
+  if(elapsed<MATCH_TIMEOUT_MS)return null;
+  // Match timed out — draw
+  await pool.query(`UPDATE matches SET status='finished',winner_id=NULL,finished_at=UTC_TIMESTAMP() WHERE id=$1 AND status='active'`,[matchId]);
+  if(!row.is_ai){
+    await withTransaction(async client=>{await updateRatings(client,row,null);});
+    await rewardPvpResult(matchId);
+    for(const id of [row.player1_id,row.player2_id])await evaluateAchievements(id);
+  }else{
+    const humanId=isAiPlayer(row.player1_id)?row.player2_id:row.player1_id;
+    await rewardPvpResultForHuman(matchId,humanId);
+    await evaluateAchievements(humanId);
+  }
+  return {matchId,draw:true};
 }

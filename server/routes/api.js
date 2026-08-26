@@ -7,7 +7,7 @@ import { requireAuth, requireAdmin, requirePlayOpen, csrf, rateLimit } from '../
 import { allGames, allGameMap } from '../catalog.js';
 import { games } from '../games/index.js';
 import { createChallenge, acceptChallenge, declineChallenge, listChallenges } from '../services/challenges.js';
-import { getMatchForUser, listRecentMatches } from '../services/matches.js';
+import { getMatchForUser, listRecentMatches, checkMatchTimeout } from '../services/matches.js';
 import { publicSiteConfig, getSetting, setSetting, getPlayStatus } from '../services/site.js';
 import { getProfileProgress } from '../services/rewards.js';
 import { startSoloRun, finishSoloRun } from '../services/solo.js';
@@ -50,7 +50,7 @@ router.post('/challenges',csrf,requirePlayOpen,rateLimit({prefix:'challenge-crea
 router.post('/challenges/:id/accept',csrf,requirePlayOpen,async(req,res)=>{const id=parse(uuid,req.params.id),result=await acceptChallenge(id,req.session.userId);const io=req.app.get('io');io?.to(`user:${result.creatorId}`).emit('match:created',{matchId:result.matchId});io?.to(`user:${req.session.userId}`).emit('match:created',{matchId:result.matchId});res.json({matchId:result.matchId});});
 router.post('/challenges/:id/decline',csrf,async(req,res)=>{const id=parse(uuid,req.params.id),r=await declineChallenge(id,req.session.userId);req.app.get('io')?.to(`user:${r.creator_id}`).emit('challenge:changed',{id});res.status(204).end();});
 router.get('/matches',async(req,res)=>res.json({matches:await listRecentMatches(req.session.userId)}));
-router.get('/matches/:id',async(req,res)=>res.json({match:await getMatchForUser(parse(uuid,req.params.id),req.session.userId)}));
+router.get('/matches/:id',async(req,res)=>{const id=parse(uuid,req.params.id);await checkMatchTimeout(id).catch(()=>{});res.json({match:await getMatchForUser(id,req.session.userId)});});
 
 router.post('/solo/:gameKey/start',csrf,requirePlayOpen,rateLimit({prefix:'solo-start',limit:80,windowSeconds:60,keyFn:req=>req.session.userId}),async(req,res)=>res.status(201).json(await startSoloRun(req.session.userId,String(req.params.gameKey))));
 router.post('/solo/:gameKey/finish',csrf,requirePlayOpen,rateLimit({prefix:'solo-finish',limit:80,windowSeconds:60,keyFn:req=>req.session.userId}),async(req,res)=>{const body=parse(soloFinishSchema,req.body);try{const result=await finishSoloRun(req.session.userId,body,String(req.params.gameKey));req.app.get('io')?.to(`user:${req.session.userId}`).emit('progress:update',{progress:await getProfileProgress(req.session.userId),achievements:result.reward.achievements});res.json(result);}catch(error){await audit(req.session.userId,'solo.reject',body.runId,{gameKey:String(req.params.gameKey).slice(0,40),code:error.code||'REJECTED',score:body.score,durationMs:body.durationMs}).catch(()=>{});throw error;}});
