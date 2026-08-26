@@ -109,3 +109,5 @@
 .check-warning{display:inline-block;padding:2px 8px;background:rgba(255,97,120,.15);border:1px solid rgba(255,97,120,.3);border-radius:6px;color:#ff8396;font-size:10px;animation:checkPulse .6s ease infinite alternate}@keyframes checkPulse{from{opacity:.7}to{opacity:1;box-shadow:0 0 8px rgba(255,97,120,.4)}}
 
 .queue-users-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;margin-bottom:20px}.queue-user-card{display:flex;align-items:center;justify-content:space-between;padding:12px;border:1px solid rgba(70,230,167,.15);background:rgba(70,230,167,.04);border-radius:14px}.queue-user-card .member-info{gap:10px}
+
+.rps-cycling{animation:rpsCycle .3s ease infinite}.bounce-in{animation:rpsBounce .5s ease}@keyframes rpsCycle{0%{transform:scale(.9);opacity:.7}50%{transform:scale(1.1);opacity:1}100%{transform:scale(.9);opacity:.7}}
