@@ -1,7 +1,7 @@
 (()=>{
 'use strict';
 const root=document.getElementById('app'),toastRoot=document.getElementById('toast'),modalRoot=document.getElementById('modalRoot'),ambientAudio=document.getElementById('ambientAudio'),audio=window.QGTAudio;
-let me=null,progress=null,csrfToken='',catalog=[],offices=[],site=null,releases=[],socket=null,currentMatch=null,selectedGame='caro',selectedPiece=null,users=[],chatMessages=[],queueGame=null,chatCooldownUntil=0,ambientEnabled=audio?.enabled??true,matchSyncTimer=null,matchSyncBusy=false,moveInFlight=false,queueSyncTimer=null,surrenderInFlight=false,turnTimerInterval=null,turnSecondsLeft=30,rpsAnimating=false;
+let me=null,progress=null,csrfToken='',catalog=[],offices=[],site=null,releases=[],socket=null,currentMatch=null,selectedGame='caro',selectedPiece=null,users=[],chatMessages=[],queueGame=null,chatCooldownUntil=0,ambientEnabled=false,matchSyncTimer=null,matchSyncBusy=false,moveInFlight=false,queueSyncTimer=null,surrenderInFlight=false,turnTimerInterval=null,turnSecondsLeft=30,rpsAnimating=false;
 const AI_PLAYER_UUID='00000000-0000-0000-0000-000000000000';
 const toastQueue=[];let toastActive=false,currentToastKey='';const achievementQueue=[];let achievementShowing=false;
 const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];

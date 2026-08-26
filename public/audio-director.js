@@ -6,12 +6,12 @@ const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 class AudioDirector{
   constructor(){
     this.version='4.1.7';
-    this.enabled=localStorage.getItem(STORE)!=='0';
+    this.enabled=localStorage.getItem(STORE)==='1';
     this.mode='dashboard';
     this.intensity=.25;
     this.customUrl='';
     this.ctx=null;this.master=null;this.musicGain=null;this.sfxGain=null;this.limiter=null;
-    this.musicLevel=.72;this.sfxLevel=.9;
+    this.musicLevel=.30;this.sfxLevel=.60;
     try{const saved=JSON.parse(localStorage.getItem(VOL_STORE)||'null');if(saved){this.musicLevel=clamp(Number(saved.music)||.72,.05,1);this.sfxLevel=clamp(Number(saved.sfx)||.9,.05,1);}}catch{}
     this.timer=null;this.nextNoteTime=0;this.step=0;this.audio=null;this.unlocked=false;
     const unlock=()=>{this.unlocked=true;if(this.enabled)this.start();};
