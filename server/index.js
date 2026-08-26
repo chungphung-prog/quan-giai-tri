@@ -13,6 +13,7 @@ import { startGoogle, googleCallback, logout } from './auth/google.js';
 import { requireAuth, requirePlayOpen, csrf, rateLimit } from './middleware/auth.js';
 import apiRouter from './routes/api.js';
 import { configureSockets } from './sockets.js';
+import { ensureAiPlayer } from './services/ai.js';
 const __dirname=path.dirname(fileURLToPath(import.meta.url)),publicDir=path.resolve(__dirname,'../public');
 const app=express();app.disable('x-powered-by');if(config.trustProxy)app.set('trust proxy',config.trustProxy);
 app.get('/healthz',(req,res)=>res.json({ok:true,service:'quan-giai-tri'}));
@@ -23,6 +24,7 @@ app.use((req,res,next)=>{res.setHeader('Permissions-Policy','camera=(), micropho
 app.use(['/auth','/api','/solo'],(req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
 app.use(express.json({limit:config.maxBodyBytes,type:'application/json'}));
 await initDb();
+await ensureAiPlayer();
 const sessionMiddleware=session({name:config.isProd?'__Host-qgt.sid':'qgt.sid',secret:config.sessionSecret,store:createSessionStore(),resave:false,saveUninitialized:false,rolling:true,proxy:config.isProd?true:undefined,cookie:{httpOnly:true,secure:config.isProd,sameSite:'lax',path:'/',maxAge:config.sessionMaxAgeMs}});app.use(sessionMiddleware);
 app.get('/auth/google',rateLimit({prefix:'auth-start',limit:20,windowSeconds:600}),startGoogle);app.get('/auth/google/callback',rateLimit({prefix:'auth-callback',limit:30,windowSeconds:600}),googleCallback);app.post('/auth/logout',requireAuth,csrf,logout);
 app.use('/api',apiRouter);

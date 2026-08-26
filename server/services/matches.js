@@ -2,7 +2,8 @@ import crypto from 'node:crypto';
 import { pool, withTransaction, audit } from '../db.js';
 import { getGame } from '../games/index.js';
 import { GameRuleError } from '../games/common.js';
-import { rewardPvpResult, evaluateAchievements } from './rewards.js';
+import { rewardPvpResult, rewardPvpResultForHuman, evaluateAchievements } from './rewards.js';
+import { AI_PLAYER_ID, isAiPlayer, computeAiMove } from './ai.js';
 
 function httpError(status,message,code='ERROR'){const e=new Error(message);e.status=status;e.code=code;return e;}
 const userPublic=(row,prefix)=>({id:row[`${prefix}_id`],name:row[`${prefix}_name`],avatarUrl:row[`${prefix}_avatar`],officeId:row[`${prefix}_office_id`],officeName:row[`${prefix}_office_name`]});
@@ -15,6 +16,41 @@ export async function createMatch(client,gameKey,player1Id,player2Id){
   await client.query('INSERT INTO matches(id,game_key,player1_id,player2_id,state) VALUES($1,$2,$3,$4,$5)',[id,gameKey,p1,p2,JSON.stringify(state)]);
   return id;
 }
+
+export async function createAiMatch(userId,gameKey){
+  const game=getGame(gameKey);
+  // Check game enabled
+  const {rows:cfgRows}=await pool.query('SELECT enabled FROM game_configs WHERE game_key=$1',[gameKey]);
+  if(!cfgRows[0]?.enabled)throw httpError(423,'Game đang được admin ẩn','GAME_DISABLED');
+  // Check no active match for user
+  const {rowCount:activeCount}=await pool.query(`SELECT id FROM matches WHERE status='active' AND (player1_id=$1 OR player2_id=$1)`,[userId]);
+  if(activeCount)throw httpError(409,'Bạn đang có trận đang đấu','ACTIVE_MATCH');
+  // Verify AI player exists
+  const {rowCount:aiExists}=await pool.query('SELECT id FROM users WHERE id=$1',[AI_PLAYER_ID]);
+  if(!aiExists)throw httpError(500,'AI player not configured','AI_NOT_CONFIGURED');
+  // Random position assignment
+  const [p1,p2]=crypto.randomInt(2)===0?[userId,AI_PLAYER_ID]:[AI_PLAYER_ID,userId];
+
+  const matchId=await withTransaction(async(client)=>{
+    const state=game.create();
+    const id=crypto.randomUUID();
+    await client.query('INSERT INTO matches(id,game_key,player1_id,player2_id,state,is_ai) VALUES($1,$2,$3,$4,$5,1)',[id,gameKey,p1,p2,JSON.stringify(state)]);
+
+    // If AI goes first, compute opening move
+    const aiIndex=p1===AI_PLAYER_ID?0:1;
+    if(state.turn===aiIndex){
+      const aiResult=await computeAiMove(state,gameKey,aiIndex);
+      if(aiResult.action){
+        await client.query('UPDATE matches SET state=$2,version=1 WHERE id=$1',[id,JSON.stringify(aiResult.state)]);
+        await client.query('INSERT INTO match_events(match_id,version,actor_id,client_action_id,action_type,action) VALUES($1,1,$2,$3,$4,$5)',[id,AI_PLAYER_ID,`ai-open-${id}`,'move',JSON.stringify(aiResult.action)]);
+      }
+    }
+    return id;
+  });
+  return matchId;
+}
+
+export function isAiMatch(matchRow){return Boolean(matchRow.is_ai);}
 
 export async function getMatchForUser(matchId,userId){
   const {rows}=await pool.query(`
@@ -67,16 +103,43 @@ export async function applyMatchAction({matchId,userId,clientActionId,expectedVe
     if(duplicate.rowCount)return matchId;
     if(row.status!=='active')throw httpError(409,'Trận đã kết thúc','MATCH_FINISHED');
     if(row.version!==expectedVersion)throw httpError(409,'State của bạn đã cũ','STALE_VERSION');
+
+    // --- Surrender branch ---
+    if(action.type==='surrender'){
+      const opponentId=playerIndex===0?row.player2_id:row.player1_id;
+      const nextVersion=row.version+1;
+      await client.query(`UPDATE matches SET status='finished',winner_id=$2,version=$3,finished_at=UTC_TIMESTAMP() WHERE id=$1`,[matchId,opponentId,nextVersion]);
+      await client.query('INSERT INTO match_events(match_id,version,actor_id,client_action_id,action_type,action) VALUES($1,$2,$3,$4,$5,$6)',[matchId,nextVersion,userId,clientActionId,'surrender',JSON.stringify(action)]);
+      if(!row.is_ai){
+        await updateRatings(client,row,playerIndex===0?1:0);
+      }
+      finished=true;
+      return matchId;
+    }
+
     const game=getGame(row.game_key);let applied;
     try{applied=game.apply(row.state,action,playerIndex);}catch(error){if(error instanceof GameRuleError)throw httpError(400,error.message,error.code);throw error;}
     const nextVersion=row.version+1; let winnerId=null,status='active';
     if(applied.result){status='finished';finished=true;winnerId=applied.result.winnerIndex==null?null:(applied.result.winnerIndex===0?row.player1_id:row.player2_id);}
     await client.query(`UPDATE matches SET state=$2,version=$3,status=$4,winner_id=$5,finished_at=CASE WHEN $4='finished' THEN UTC_TIMESTAMP() ELSE finished_at END WHERE id=$1`,[matchId,JSON.stringify(applied.state),nextVersion,status,winnerId]);
     await client.query('INSERT INTO match_events(match_id,version,actor_id,client_action_id,action_type,action) VALUES($1,$2,$3,$4,$5,$6)',[matchId,nextVersion,userId,clientActionId,String(action.type||'move').slice(0,40),JSON.stringify(action)]);
-    if(applied.result)await updateRatings(client,row,applied.result.winnerIndex);
+    if(applied.result&&!row.is_ai)await updateRatings(client,row,applied.result.winnerIndex);
     return matchId;
   });
-  if(finished){await rewardPvpResult(matchIdOut);const r=await pool.query('SELECT player1_id,player2_id FROM matches WHERE id=$1',[matchIdOut]);for(const id of [r.rows[0]?.player1_id,r.rows[0]?.player2_id].filter(Boolean))await evaluateAchievements(id);}
+  if(finished){
+    const r=await pool.query('SELECT player1_id,player2_id,is_ai FROM matches WHERE id=$1',[matchIdOut]);
+    const matchRow=r.rows[0];
+    if(matchRow&&matchRow.is_ai){
+      // AI match: reward only the human player, achievements for human only
+      const humanId=isAiPlayer(matchRow.player1_id)?matchRow.player2_id:matchRow.player1_id;
+      await rewardPvpResultForHuman(matchIdOut,humanId);
+      await evaluateAchievements(humanId);
+    }else if(matchRow){
+      // Human match: reward both players normally
+      await rewardPvpResult(matchIdOut);
+      for(const id of [matchRow.player1_id,matchRow.player2_id].filter(Boolean))await evaluateAchievements(id);
+    }
+  }
   await audit(userId,'match.action',matchIdOut,{finished});
   return {matchId:matchIdOut,finished};
 }

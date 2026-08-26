@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS users(
 CREATE TABLE IF NOT EXISTS matches(
   id CHAR(36) PRIMARY KEY,game_key VARCHAR(40) NOT NULL,player1_id CHAR(36) NOT NULL,player2_id CHAR(36) NOT NULL,state LONGTEXT NOT NULL,
   version INT UNSIGNED NOT NULL DEFAULT 0,status ENUM('active','finished','abandoned') NOT NULL DEFAULT 'active',winner_id CHAR(36) NULL,
+  is_ai TINYINT(1) NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,finished_at DATETIME NULL,
   INDEX matches_players_idx(player1_id,player2_id,created_at),INDEX matches_status_idx(status,created_at),
   CONSTRAINT fk_match_p1 FOREIGN KEY(player1_id) REFERENCES users(id),CONSTRAINT fk_match_p2 FOREIGN KEY(player2_id) REFERENCES users(id),CONSTRAINT fk_match_winner FOREIGN KEY(winner_id) REFERENCES users(id)
