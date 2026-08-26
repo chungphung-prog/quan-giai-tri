@@ -4,7 +4,7 @@ import { getGame } from '../games/index.js';
 import { createMatch } from './matches.js';
 function err(status,message,code){const e=new Error(message);e.status=status;e.code=code;return e;}
 export async function createChallenge({creatorId,gameKey,targetUserId=null,targetOfficeGroupId=null}){
-  getGame(gameKey);if(Boolean(targetUserId)===Boolean(targetOfficeGroupId))throw err(400,'Phải chọn đúng một user hoặc khối','BAD_TARGET');if(targetUserId===creatorId)throw err(400,'Không thể tự thách đấu','SELF_CHALLENGE');
+  getGame(gameKey);const cfg=(await pool.query('SELECT enabled FROM game_configs WHERE game_key=$1',[gameKey])).rows[0];if(!cfg?.enabled)throw err(423,'Game đang được admin ẩn','GAME_DISABLED');if(Boolean(targetUserId)===Boolean(targetOfficeGroupId))throw err(400,'Phải chọn đúng một user hoặc khối','BAD_TARGET');if(targetUserId===creatorId)throw err(400,'Không thể tự thách đấu','SELF_CHALLENGE');
   if(targetUserId&&!(await pool.query('SELECT id FROM users WHERE id=$1',[targetUserId])).rowCount)throw err(404,'Không tìm thấy user','USER_NOT_FOUND');
   if(targetOfficeGroupId&&!(await pool.query('SELECT id FROM office_groups WHERE id=$1',[targetOfficeGroupId])).rowCount)throw err(404,'Không tìm thấy khối','OFFICE_NOT_FOUND');
   const id=crypto.randomUUID(),expiresAt=new Date(Date.now()+10*60_000);
@@ -13,8 +13,8 @@ export async function createChallenge({creatorId,gameKey,targetUserId=null,targe
 }
 export async function acceptChallenge(challengeId,userId){
   const result=await withTransaction(async client=>{
-    const {rows}=await client.query(`SELECT c.*,u.office_group_id accepter_office FROM challenges c JOIN users u ON u.id=$2 WHERE c.id=$1 FOR UPDATE`,[challengeId,userId]);const c=rows[0];
-    if(!c)throw err(404,'Không tìm thấy challenge','CHALLENGE_NOT_FOUND');if(c.creator_id===userId)throw err(400,'Không thể tự nhận challenge','SELF_CHALLENGE');if(c.status!=='pending'||new Date(c.expires_at).getTime()<=Date.now())throw err(409,'Challenge không còn hiệu lực','CHALLENGE_CLOSED');if(c.target_user_id&&c.target_user_id!==userId)throw err(403,'Challenge này dành cho người khác','WRONG_TARGET');if(c.target_office_group_id&&c.target_office_group_id!==c.accepter_office)throw err(403,'Challenge này dành cho khối khác','WRONG_OFFICE');
+    const {rows}=await client.query(`SELECT c.*,u.office_group_id accepter_office,gc.enabled game_enabled FROM challenges c JOIN users u ON u.id=$2 JOIN game_configs gc ON gc.game_key=c.game_key WHERE c.id=$1 FOR UPDATE`,[challengeId,userId]);const c=rows[0];
+    if(!c)throw err(404,'Không tìm thấy challenge','CHALLENGE_NOT_FOUND');if(!c.game_enabled)throw err(423,'Game đang được admin ẩn','GAME_DISABLED');if(c.creator_id===userId)throw err(400,'Không thể tự nhận challenge','SELF_CHALLENGE');if(c.status!=='pending'||new Date(c.expires_at).getTime()<=Date.now())throw err(409,'Challenge không còn hiệu lực','CHALLENGE_CLOSED');if(c.target_user_id&&c.target_user_id!==userId)throw err(403,'Challenge này dành cho người khác','WRONG_TARGET');if(c.target_office_group_id&&c.target_office_group_id!==c.accepter_office)throw err(403,'Challenge này dành cho khối khác','WRONG_OFFICE');
     const matchId=await createMatch(client,c.game_key,c.creator_id,userId);await client.query("UPDATE challenges SET status='accepted',match_id=$2 WHERE id=$1",[challengeId,matchId]);return {matchId,creatorId:c.creator_id,targetOfficeGroupId:c.target_office_group_id};
   });await audit(userId,'challenge.accept',challengeId,{matchId:result.matchId});return result;
 }
