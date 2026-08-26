@@ -9,6 +9,7 @@ export async function joinQueue(userId,gameKey){
 }
 export async function leaveQueue(userId){await pool.query('DELETE FROM match_queue WHERE user_id=$1',[userId]);return {ok:true};}
 export async function queueStatus(){const {rows}=await pool.query('SELECT game_key,COUNT(*) waiting FROM match_queue GROUP BY game_key');return rows.map(r=>({...r,waiting:Number(r.waiting)}));}
+export async function queueUsers(){const {rows}=await pool.query(`SELECT q.game_key,q.joined_at,u.id,u.display_name name,u.avatar_url FROM match_queue q JOIN users u ON u.id=q.user_id WHERE u.status='active' ORDER BY q.joined_at ASC LIMIT 30`);return rows;}
 
 export async function myQueueState(userId,gameKey=null){
   const active=await pool.query(`SELECT id,game_key,created_at FROM matches WHERE status='active' AND (player1_id=$1 OR player2_id=$1) ${gameKey?'AND game_key=$2':''} ORDER BY created_at DESC LIMIT 1`,gameKey?[userId,gameKey]:[userId]);

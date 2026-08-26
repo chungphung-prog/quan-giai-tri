@@ -12,7 +12,7 @@ import { publicSiteConfig, getSetting, setSetting, getPlayStatus } from '../serv
 import { getProfileProgress } from '../services/rewards.js';
 import { startSoloRun, finishSoloRun } from '../services/solo.js';
 import { listChat } from '../services/chat.js';
-import { queueStatus, myQueueState } from '../services/matchmaking.js';
+import { queueStatus, myQueueState, queueUsers } from '../services/matchmaking.js';
 
 const router=express.Router();router.use(requireAuth);router.use(rateLimit({prefix:'api',limit:240,windowSeconds:60,keyFn:req=>req.session.userId}));
 const uuid=z.string().uuid();
@@ -41,6 +41,7 @@ router.get('/play-status',async(req,res)=>res.json(await getPlayStatus()));
 router.get('/releases',async(req,res)=>{const {rows}=await pool.query('SELECT id,version,title,body,items,release_date,created_at FROM releases ORDER BY release_date DESC,created_at DESC LIMIT 60');res.json({releases:rows});});
 router.get('/chat',async(req,res)=>res.json({messages:await listChat(70)}));
 router.get('/matchmaking/status',async(req,res)=>res.json({queues:await queueStatus()}));
+router.get('/matchmaking/users',async(req,res)=>res.json({users:await queueUsers()}));
 router.get('/matchmaking/me',async(req,res)=>res.json(await myQueueState(req.session.userId,typeof req.query.gameKey==='string'&&req.query.gameKey?req.query.gameKey:null)));
 
 router.get('/lobby/users',async(req,res)=>{const AI_ID='00000000-0000-0000-0000-000000000000';const {rows}=await pool.query(`SELECT u.id,u.display_name,u.avatar_url,u.office_group_id,o.name office_name,u.xp,u.points FROM users u LEFT JOIN office_groups o ON o.id=u.office_group_id WHERE u.id<>$1 AND u.id<>$2 AND u.status='active' ORDER BY u.last_login_at DESC LIMIT 180`,[req.session.userId,AI_ID]);const presence=req.app.get('presence')||new Map();res.json({users:rows.map(r=>({id:r.id,name:r.display_name,avatarUrl:r.avatar_url,officeGroup:r.office_group_id?{id:r.office_group_id,name:r.office_name}:null,xp:Number(r.xp),points:Number(r.points),online:presence.has(r.id)}))});});
