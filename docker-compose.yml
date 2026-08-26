@@ -1,0 +1,39 @@
+services:
+  mariadb:
+    image: mariadb:11.4
+    environment:
+      MARIADB_DATABASE: quangiaitri
+      MARIADB_USER: game
+      MARIADB_PASSWORD: game_dev_password
+      MARIADB_ROOT_PASSWORD: root_dev_password
+    volumes:
+      - mariadbdata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  app:
+    build: .
+    ports: ["3000:3000"]
+    environment:
+      NODE_ENV: development
+      APP_ORIGIN: http://localhost:3000
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_REDIRECT_URI: http://localhost:3000/auth/google/callback
+      GOOGLE_HOSTED_DOMAIN: ntq-solution.com.vn
+      SESSION_SECRET: ${SESSION_SECRET}
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_NAME: quangiaitri
+      DB_USER: game
+      DB_PASSWORD: game_dev_password
+      DB_POOL_SIZE: 10
+      ADMIN_EMAILS: ${ADMIN_EMAILS}
+      TRUST_PROXY: 0
+    depends_on:
+      mariadb:
+        condition: service_healthy
+volumes:
+  mariadbdata:

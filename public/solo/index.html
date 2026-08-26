@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#10131a" />
+  <title>Kho game • Quán Giải Trí</title>
+  <link rel="stylesheet" href="styles.css?v=4.1.7" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/">← <span>Quán Giải Trí</span></a>
+      <div class="top-actions">
+        <button id="soundBtn" class="ghost-btn" title="Âm thanh">🔊</button>
+        <button id="profileBtn" class="profile-pill"><span id="profileAvatar">😎</span><span id="profileName">Khách</span><b id="profileLevel">Lv.1</b></button>
+      </div>
+    </header>
+
+    <div class="online-banner"><span class="pulse-dot"></span><b>Online Score Arena</b><span>Mỗi lượt hợp lệ được server ghi XP, Point và bảng xếp hạng riêng theo game.</span></div><main id="app"></main>
+
+    <footer>
+      <span>Quán Giải Trí • Online leaderboard • Server-controlled XP & Point</span>
+      <button id="resetBtn" class="link-btn">Xóa cache máy này</button>
+    </footer>
+  </div>
+
+  <div id="modalRoot"></div>
+  <div id="toastRoot" aria-live="polite"></div>
+  <script src="/audio-director.js?v=4.1.7"></script>
+  <script src="app.js?v=4.1.7"></script>
+</body>
+</html>

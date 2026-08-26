@@ -1,0 +1,31 @@
+import { z } from 'zod';
+import { pool } from './db.js';
+import { fixedWindowLimit } from './rate-limit.js';
+import { applyMatchAction, getMatchForUser, getPublicMatchResult } from './services/matches.js';
+import { sendChat } from './services/chat.js';
+import { joinQueue, leaveQueue } from './services/matchmaking.js';
+import { getPlayStatus } from './services/site.js';
+import { getProfileProgress, evaluateAchievements } from './services/rewards.js';
+const actionSchema=z.object({matchId:z.string().uuid(),clientActionId:z.string().min(8).max(80),expectedVersion:z.number().int().nonnegative(),action:z.record(z.any())}).strict();
+const chatSchema=z.object({message:z.string().min(1).max(300)}).strict();
+const queueSchema=z.object({gameKey:z.string().min(1).max(40)}).strict();
+export function configureSockets(io,presence){
+  const counts=new Map();
+  io.on('connection',async socket=>{
+    const session=socket.request.session,userId=session?.userId;if(!userId){socket.disconnect(true);return;}
+    const {rows}=await pool.query("SELECT id,display_name,avatar_url,office_group_id,status FROM users WHERE id=$1",[userId]);const user=rows[0];if(!user||user.status!=='active'){socket.disconnect(true);return;}
+    socket.data.userId=userId;socket.join(`user:${userId}`);if(user.office_group_id)socket.join(`office:${user.office_group_id}`);
+    counts.set(userId,(counts.get(userId)||0)+1);presence.set(userId,{name:user.display_name,avatarUrl:user.avatar_url,officeGroupId:user.office_group_id});io.emit('presence:update',{userId,online:true,count:presence.size});
+    const sessionTimer=setInterval(()=>socket.request.session.reload(err=>{if(err)socket.disconnect(true);}),5*60_000);
+
+    socket.on('chat:send',async(payload,ack=()=>{})=>{try{const lim=await fixedWindowLimit(`socket-chat:${userId}`,15,60);if(!lim.allowed)return ack({ok:false,error:'RATE_LIMITED'});const {message}=chatSchema.parse(payload);const row=await sendChat(userId,message);const detail=(await pool.query(`SELECT c.id,c.message,c.created_at,u.id user_id,u.display_name,u.avatar_url,o.name office_name FROM chat_messages c JOIN users u ON u.id=c.user_id LEFT JOIN office_groups o ON o.id=u.office_group_id WHERE c.id=$1`,[row.id])).rows[0];const out={id:detail.id,message:detail.message,createdAt:detail.created_at,user:{id:detail.user_id,name:detail.display_name,avatarUrl:detail.avatar_url,officeName:detail.office_name}};io.emit('chat:new',{message:out});const achievements=await evaluateAchievements(userId);if(achievements.length)io.to(`user:${userId}`).emit('progress:update',{progress:await getProfileProgress(userId),achievements});ack({ok:true,id:row.id});}catch(e){ack({ok:false,error:e.code||'CHAT_FAILED',message:e.status&&e.status<500?e.message:'Không gửi được tin nhắn'});}});
+
+    socket.on('queue:join',async(payload,ack=()=>{})=>{try{const status=await getPlayStatus();const role=(await pool.query('SELECT role FROM users WHERE id=$1',[userId])).rows[0]?.role;if(!status.open&&role!=='admin')return ack({ok:false,error:'PLAY_CLOSED',message:status.message});const limited=await fixedWindowLimit(`socket-queue:${userId}`,20,60);if(!limited.allowed)return ack({ok:false,error:'RATE_LIMITED'});const {gameKey}=queueSchema.parse(payload),result=await joinQueue(userId,gameKey);if(result.matched){io.to(`user:${userId}`).emit('match:created',{matchId:result.matchId,matchmaking:true});io.to(`user:${result.opponentId}`).emit('match:created',{matchId:result.matchId,matchmaking:true});io.emit('queue:update',{gameKey});}ack({ok:true,...result});}catch(e){ack({ok:false,error:e.code||'QUEUE_FAILED',message:e.status&&e.status<500?e.message:'Không ghép trận được'});}});
+    socket.on('queue:leave',async(_,ack=()=>{})=>{await leaveQueue(userId);ack({ok:true});io.emit('queue:update',{});});
+
+    socket.on('match:join',async(payload,ack=()=>{})=>{try{const id=z.string().uuid().parse(payload?.matchId);const match=await getMatchForUser(id,userId);socket.join(`match:${id}`);ack({ok:true,match});}catch(e){ack({ok:false,error:e.code||'MATCH_JOIN_FAILED',message:e.message});}});
+    socket.on('match:action',async(payload,ack=()=>{})=>{try{const play=await getPlayStatus();const role=(await pool.query('SELECT role FROM users WHERE id=$1',[userId])).rows[0]?.role;if(!play.open&&role!=='admin')return ack({ok:false,error:'PLAY_CLOSED',message:play.message});const limited=await fixedWindowLimit(`socket-action:${userId}`,140,60);if(!limited.allowed)return ack({ok:false,error:'RATE_LIMITED'});const body=actionSchema.parse(payload);const result=await applyMatchAction({...body,userId});const mine=await getMatchForUser(body.matchId,userId),opponentId=mine.players[1-mine.playerIndex].id,theirs=await getMatchForUser(body.matchId,opponentId);io.to(`user:${userId}`).emit('match:update',{match:mine});io.to(`user:${opponentId}`).emit('match:update',{match:theirs});if(result.finished){const publicResult=await getPublicMatchResult(body.matchId);if(publicResult)io.emit('arena:result',{result:publicResult});for(const id of [userId,opponentId])io.to(`user:${id}`).emit('progress:update',{progress:await getProfileProgress(id)});}ack({ok:true,version:mine.version,match:mine});}catch(e){if(e?.name==='ZodError')return ack({ok:false,error:'VALIDATION_ERROR'});if(e.code==='STALE_VERSION'){try{return ack({ok:false,error:'STALE_VERSION',match:await getMatchForUser(payload?.matchId,userId)});}catch{}}ack({ok:false,error:e.code||'ACTION_FAILED',message:e.status&&e.status<500?e.message:'Không xử lý được nước đi'});}});
+
+    socket.on('disconnect',async()=>{clearInterval(sessionTimer);await leaveQueue(userId).catch(()=>{});const next=Math.max(0,(counts.get(userId)||1)-1);if(next===0){counts.delete(userId);presence.delete(userId);io.emit('presence:update',{userId,online:false,count:presence.size});}else counts.set(userId,next);});
+  });
+}
