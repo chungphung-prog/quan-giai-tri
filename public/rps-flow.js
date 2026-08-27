@@ -102,11 +102,16 @@ function patchWaitingPhase(){
   const m=latestMatch;
   if(!isCurrentRps(m)||isDone(m))return;
   const mine=myPick(m);
-  if(!mine)return; // Phase 1 is already rendered/bound by app.js.
+  if(!mine)return; // Before choosing, both players legitimately have a 30s response clock.
   const wait=qs('.rps-wait');
   if(wait)wait.textContent='⏳ Đợi đối thủ chốt…';
   const picked=qs('.rps-picked b');
   if(picked)picked.textContent=`Bạn đã chốt: ${RPS_LABEL[mine]||mine}`;
+  // RPS has no alternating state.turn. Once I have picked, this is NOT my turn anymore.
+  // Hide/remove the legacy per-turn countdown while the opponent still has their server deadline.
+  const countdown=qs('#turnCountdown');if(countdown)countdown.remove();
+  const banner=qs('.turn-banner');
+  if(banner){banner.className='turn-banner opponent rps-waiting-opponent';banner.textContent='✅ BẠN ĐÃ CHỐT • ⏳ ĐỢI ĐỐI THỦ';}
 }
 
 function detachOldRpsHost(){
@@ -301,6 +306,6 @@ installFetchTap();
 installSocketTap();
 installModalGuard();
 installPublicResultGuard();
-setInterval(clampMatchTimerDom,120);
+setInterval(()=>{clampMatchTimerDom();patchWaitingPhase();},120);
 window.addEventListener('hashchange',handleRouteChange);
 })();

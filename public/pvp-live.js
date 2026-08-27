@@ -26,9 +26,26 @@ async function loadBasics(){
 }
 function timingAge(t){if(!t||!clockSyncedAt||!Number.isFinite(Number(t.serverNowMs)))return 0;return Math.max(0,(Date.now()+clockOffsetMs)-Number(t.serverNowMs));}
 function syncBase(t){const age=timingAge(t);return {matchRemainingMs:Math.max(0,Number(t?.matchRemainingMs??0)-age),turnRemainingMs:t?.turnRemainingMs==null?null:Math.max(0,Number(t.turnRemainingMs)-age),matchDurationMs:Number(t?.matchDurationMs||MATCH_DURATION_MS),perf:performance.now()};}
-function ingestTiming(matchId,t){if(!matchId||!t)return;matchTiming.set(String(matchId),syncBase(t));}
+function deadlineStorageKey(matchId){return `qgt:match-deadline:${String(matchId)}`;}
+function currentRemaining(base){if(!base)return null;return Math.max(0,Number(base.matchRemainingMs||0)-(performance.now()-Number(base.perf||performance.now())));}
+function stableMatchBase(matchId,t){
+  const id=String(matchId),fresh=syncBase(t),now=Date.now();
+  // A whole-match clock is monotonic: a later snapshot may reduce it, never extend/reset it.
+  const existing=matchTiming.get(id),existingRemain=currentRemaining(existing);
+  if(existingRemain!=null)fresh.matchRemainingMs=Math.min(fresh.matchRemainingMs,existingRemain);
+  try{
+    const key=deadlineStorageKey(id),stored=Number(sessionStorage.getItem(key)||0),reportedDeadline=now+fresh.matchRemainingMs;
+    const stableDeadline=stored>now-5000?Math.min(stored,reportedDeadline):reportedDeadline;
+    sessionStorage.setItem(key,String(Math.round(stableDeadline)));
+    fresh.matchRemainingMs=Math.max(0,stableDeadline-now);
+  }catch{}
+  fresh.perf=performance.now();
+  return fresh;
+}
+function ingestTiming(matchId,t){if(!matchId||!t)return;matchTiming.set(String(matchId),stableMatchBase(matchId,t));}
 function adjustParticipantMatch(match,t){
-  if(!match||!t)return match;const base=syncBase(t);matchTiming.set(String(match.id),base);const now=Date.now(),duration=base.matchDurationMs,remain=base.matchRemainingMs;
+  if(!match||!t)return match;const base=stableMatchBase(match.id,t);matchTiming.set(String(match.id),base);const now=Date.now(),duration=base.matchDurationMs,remain=base.matchRemainingMs;
+  // Legacy app still renders from createdAt. Reconstruct it from the immutable whole-match deadline.
   match.createdAt=new Date(now-Math.max(0,duration-remain)).toISOString();
   if(base.turnRemainingMs!=null)match.turnDeadline=now+base.turnRemainingMs;
   return match;
@@ -78,7 +95,7 @@ async function syncClock(){
   try{const t0=Date.now(),d=await apiJson('/api/pvp/time'),t1=Date.now();clockOffsetMs=Number(d.serverNowMs)-((t0+t1)/2);clockSyncedAt=performance.now();}catch{}
 }
 async function syncCurrentParticipantTiming(){
-  const m=location.hash.match(/^#match\/([0-9a-f-]{36})$/i);if(!m)return;try{const d=await apiJson(`/api/matches/${m[1]}?_t=${Date.now()}`);if(d?.timing)ingestTiming(m[1],d.timing);}catch{}
+  const m=location.hash.match(/^#match\/([0-9a-f-]{36})$/i);if(!m)return;try{const d=await apiJson(`/api/matches/${m[1]}?_t=${Date.now()}`);if(d?.timing){ingestTiming(m[1],d.timing);tickParticipantTimer();}}catch{}
 }
 function timingNow(t){const elapsed=performance.now()-t.perf;return {match:Math.max(0,t.matchRemainingMs-elapsed),turn:t.turnRemainingMs==null?null:Math.max(0,t.turnRemainingMs-elapsed)};}
 function tickParticipantTimer(){

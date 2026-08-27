@@ -72,7 +72,7 @@ function snapshotFromRow(row){
 }
 async function rawSnapshot(matchId){
   const {rows}=await pool.query(`SELECT m.*,
-    TIMESTAMPDIFF(MICROSECOND,m.created_at,UTC_TIMESTAMP()) elapsed_us,
+    TIMESTAMPDIFF(MICROSECOND,m.created_at,NOW()) elapsed_us,
     p1.id p1_id,p1.display_name p1_name,p1.avatar_url p1_avatar,p1.is_test p1_is_test,o1.name p1_office_name,
     p2.id p2_id,p2.display_name p2_name,p2.avatar_url p2_avatar,p2.is_test p2_is_test,o2.name p2_office_name
     FROM matches m
@@ -84,7 +84,7 @@ async function rawSnapshot(matchId){
 async function spectatorSnapshot(matchId,userId,session){
   const mode=await viewerMode(userId,session),where=visibleMatchSql(mode);
   const {rows}=await pool.query(`SELECT m.*,
-    TIMESTAMPDIFF(MICROSECOND,m.created_at,UTC_TIMESTAMP()) elapsed_us,
+    TIMESTAMPDIFF(MICROSECOND,m.created_at,NOW()) elapsed_us,
     p1.id p1_id,p1.display_name p1_name,p1.avatar_url p1_avatar,p1.is_test p1_is_test,o1.name p1_office_name,
     p2.id p2_id,p2.display_name p2_name,p2.avatar_url p2_avatar,p2.is_test p2_is_test,o2.name p2_office_name
     FROM matches m
@@ -132,7 +132,7 @@ router.get('/matches/:id',async(req,res)=>{
   const id=uuid.parse(req.params.id);
   await checkMatchTimeout(id).catch(()=>{});
   const match=await getMatchForUser(id,req.session.userId);
-  const row=(await pool.query(`SELECT state,status,TIMESTAMPDIFF(MICROSECOND,created_at,UTC_TIMESTAMP()) elapsed_us FROM matches WHERE id=$1`,[id])).rows[0]||{};
+  const row=(await pool.query(`SELECT state,status,TIMESTAMPDIFF(MICROSECOND,created_at,NOW()) elapsed_us FROM matches WHERE id=$1`,[id])).rows[0]||{};
   res.json({match,timing:timing(row)});
 });
 
@@ -149,7 +149,7 @@ router.get('/pvp/history',async(req,res)=>{
   const count=(await pool.query(`SELECT COUNT(*) n FROM matches m WHERE ${where.join(' AND ')}`,params)).rows[0];
   params.push(pageSize,offset);const limitIdx=params.length-1,offsetIdx=params.length;
   const {rows}=await pool.query(`SELECT m.id,m.game_key,m.status,m.winner_id,m.version,m.created_at,m.finished_at,m.is_ai,
-    TIMESTAMPDIFF(MICROSECOND,m.created_at,UTC_TIMESTAMP()) elapsed_us,
+    TIMESTAMPDIFF(MICROSECOND,m.created_at,NOW()) elapsed_us,
     p1.id p1_id,p1.display_name p1_name,p1.avatar_url p1_avatar,p1.is_test p1_is_test,o1.name p1_office_name,
     p2.id p2_id,p2.display_name p2_name,p2.avatar_url p2_avatar,p2.is_test p2_is_test,o2.name p2_office_name,
     m.state
@@ -166,7 +166,7 @@ router.get('/pvp/live-matches',async(req,res)=>{
   const mode=await viewerMode(req.session.userId,req.session),where=["m.status='active'",visibleMatchSql(mode)];const params=[];
   if(gameKey&&gameKey!=='all'){params.push(gameKey);where.push(`m.game_key=$${params.length}`);}
   const {rows}=await pool.query(`SELECT m.id,m.game_key,m.status,m.winner_id,m.version,m.created_at,m.finished_at,m.is_ai,m.state,
-    TIMESTAMPDIFF(MICROSECOND,m.created_at,UTC_TIMESTAMP()) elapsed_us,
+    TIMESTAMPDIFF(MICROSECOND,m.created_at,NOW()) elapsed_us,
     p1.id p1_id,p1.display_name p1_name,p1.avatar_url p1_avatar,p1.is_test p1_is_test,o1.name p1_office_name,
     p2.id p2_id,p2.display_name p2_name,p2.avatar_url p2_avatar,p2.is_test p2_is_test,o2.name p2_office_name
     FROM matches m
@@ -233,11 +233,24 @@ export function startPvpDeadlineWatch(io){
     if(deadlineBusy)return;deadlineBusy=true;
     try{
       const now=Date.now();
-      const {rows}=await pool.query(`SELECT id FROM matches WHERE status='active' AND (
-        created_at<=UTC_TIMESTAMP()-INTERVAL 25 MINUTE OR
+      const {rows}=await pool.query(`SELECT id,game_key,state FROM matches WHERE status='active' AND (
+        created_at<=NOW()-INTERVAL 25 MINUTE OR
         (JSON_EXTRACT(state,'$.turnDeadline') IS NOT NULL AND CAST(JSON_UNQUOTE(JSON_EXTRACT(state,'$.turnDeadline')) AS UNSIGNED)<=$1)
       ) ORDER BY created_at ASC LIMIT 80`,[now]);
-      for(const r of rows){try{const result=await checkMatchTimeout(r.id);if(result)await notifyTimedOut(io,r.id);}catch(e){console.error(JSON.stringify({level:'error',event:'pvp_deadline_watch',matchId:r.id,message:e.message}));}}
+      for(const r of rows){try{
+        // RPS is simultaneous and has no state.turn. If exactly one player has already picked,
+        // make the generic timeout engine point at the player who has NOT picked. This prevents
+        // player 0 from being declared loser just because RPS has no alternating turn field.
+        if(r.game_key==='rps'){
+          const st=stateObject(r),p=Array.isArray(st.picks)?st.picks:[null,null],turnDeadline=number(st.turnDeadline);
+          if(turnDeadline>0&&turnDeadline<=now&&Boolean(p[0])!==Boolean(p[1])){
+            const missing=p[0]?1:0;
+            st.turn=missing;
+            await pool.query('UPDATE matches SET state=$2 WHERE id=$1 AND status=\'active\'',[r.id,JSON.stringify(st)]);
+          }
+        }
+        const result=await checkMatchTimeout(r.id);if(result)await notifyTimedOut(io,r.id);
+      }catch(e){console.error(JSON.stringify({level:'error',event:'pvp_deadline_watch',matchId:r.id,message:e.message}));}}
     }finally{deadlineBusy=false;}
   },250);
 }
