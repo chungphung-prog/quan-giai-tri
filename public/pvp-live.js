@@ -7,7 +7,7 @@ const fmtDate=v=>{try{return new Intl.DateTimeFormat('vi-VN',{dateStyle:'medium'
 const mmss=ms=>{const s=Math.max(0,Math.ceil(Number(ms||0)/1000)),m=Math.floor(s/60);return `${m}:${String(s%60).padStart(2,'0')}`;};
 const ss=ms=>`${Math.max(0,Math.ceil(Number(ms||0)/1000))}s`;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-let capturedSocket=null,clockOffsetMs=0,clockSyncedAt=0,csrfToken='',gameMap=new Map(),me=null;
+let capturedSocket=null,clockOffsetMs=0,clockSyncedAt=0,csrfToken='',gameMap=new Map(),me=null,lastQueueSnapshot=null;
 const matchTiming=new Map(),liveTiming=new Map();
 let routeSerial=0,liveRefreshTimer=null,spectatorFallbackTimer=null,spectatorMatchId=null,spectatorVersion=null,spectatorSync=null,lastZeroResync=0;
 
@@ -63,7 +63,9 @@ function installSocketCapture(){
     };
     realOn('challenge:new',payload=>handleIncomingChallenge(payload?.id));
     realOn('challenge:changed',()=>refreshPendingChallenges(false));
-    realOn('match:created',()=>setTimeout(syncCurrentParticipantTiming,50));
+    realOn('queue:snapshot',payload=>{lastQueueSnapshot=payload||{users:[],queues:[]};renderRealtimeLobbyQueue();if(location.hash==='#matches')loadLiveList(routeSerial);});
+    realOn('queue:update',()=>setTimeout(refreshQueueSnapshot,40));
+    realOn('match:created',()=>{setTimeout(syncCurrentParticipantTiming,50);setTimeout(refreshQueueSnapshot,80);if(location.hash==='#matches')setTimeout(()=>loadLiveList(routeSerial),60);});
     realOn('spectate:update',payload=>{if(payload?.match?.id===spectatorMatchId)applySpectatorSnapshot(payload.match,payload.viewers);});
     realOn('spectate:viewers',payload=>{if(payload?.matchId===spectatorMatchId){const n=document.querySelector('#qgtSpectatorViewers b');if(n)n.textContent=String(payload.viewers||0);}});
     return socket;
@@ -86,6 +88,42 @@ function tickParticipantTimer(){
   if((now.match<=0||(now.turn!=null&&now.turn<=0))&&performance.now()-lastZeroResync>650){lastZeroResync=performance.now();setTimeout(syncCurrentParticipantTiming,300);}
 }
 setInterval(tickParticipantTimer,100);setInterval(()=>{syncClock();syncCurrentParticipantTiming();},15000);syncClock();
+
+
+async function refreshQueueSnapshot(){
+  try{const [u,q]=await Promise.all([apiJson('/api/matchmaking/users'),apiJson('/api/matchmaking/status')]);lastQueueSnapshot={users:u.users||[],queues:q.queues||[],serverNowMs:Date.now()};renderRealtimeLobbyQueue();}catch{}
+}
+function removeLegacyQueueBlock(content){
+  for(const head of [...content.querySelectorAll('.section-head')]){
+    if(head.closest('#qgtRealtimeQueueBlock'))continue;
+    const eyebrow=head.querySelector('.eyebrow');if((eyebrow?.textContent||'').trim()!=='ĐANG TÌM TRẬN')continue;
+    const next=head.nextElementSibling;if(next?.classList?.contains('queue-users-grid'))next.remove();head.remove();
+  }
+}
+function renderRealtimeLobbyQueue(){
+  if(location.hash&&location.hash!=='#lobby')return;const content=contentRoot();if(!content||!lastQueueSnapshot)return;
+  removeLegacyQueueBlock(content);
+  const all=lastQueueSnapshot.users||[],users=all.filter(u=>String(u.id)!==String(me?.id)),total=(lastQueueSnapshot.queues||[]).reduce((n,x)=>n+Number(x.waiting||0),0);
+  const metric=content.querySelector('.metric-icon.cyan')?.closest('.metric-card');if(metric){const em=metric.querySelector('em');if(em)em.textContent=`${total} đang tìm trận`;}
+  let block=document.getElementById('qgtRealtimeQueueBlock');
+  if(!users.length){block?.remove();return;}
+  const sig=JSON.stringify(users.map(u=>[u.id,u.game_key,String(u.joined_at||'')]))+`:${total}`;
+  if(block?.dataset.sig===sig)return;
+  if(!block){block=document.createElement('div');block.id='qgtRealtimeQueueBlock';block.className='qgt-realtime-queue';const before=content.querySelector('.metric-grid');if(before)content.insertBefore(block,before);else content.appendChild(block);}
+  block.dataset.sig=sig;
+  block.innerHTML=`<div class="section-head"><div><span class="eyebrow">ĐANG TÌM TRẬN · REALTIME</span><h2>⚡ Tham gia ngay</h2></div><span class="qgt-queue-live-badge"><i></i>${users.length} request</span></div><section class="queue-users-grid">${users.map(u=>{const g=gameInfo(u.game_key);return `<div class="queue-user-card qgt-live-queue-card" data-qgt-waiter="${esc(u.id)}"><div class="member-info">${avatar(u,'avatar')}<div><b>${esc(u.name)}</b><small>${g.icon} ${esc(g.name)}</small></div></div><button class="btn compact primary" data-qgt-join-waiter="${esc(u.id)}" data-qgt-game="${esc(u.game_key)}">Tham gia ▶</button></div>`;}).join('')}</section>`;
+  block.querySelectorAll('[data-qgt-join-waiter]').forEach(btn=>btn.onclick=()=>joinSpecificQueue(btn));
+}
+function joinSpecificQueue(btn){
+  if(!capturedSocket){toast('Realtime chưa kết nối, thử lại sau một chút',true);refreshQueueSnapshot();return;}
+  const targetUserId=btn.dataset.qgtJoinWaiter,gameKey=btn.dataset.qgtGame;if(!targetUserId||!gameKey)return;
+  const card=btn.closest('.queue-user-card'),old=btn.textContent;btn.disabled=true;btn.textContent='⏳ Đang ghép…';card?.classList.add('joining');
+  capturedSocket.emit('queue:join-target',{targetUserId,gameKey},ack=>{
+    if(ack?.ok&&ack.matchId){toast('Ghép trận thành công!');if(!location.hash.startsWith('#match/'))location.hash=`#match/${ack.matchId}`;return;}
+    card?.classList.remove('joining');btn.disabled=false;btn.textContent=old;
+    const taken=ack?.error==='QUEUE_REQUEST_TAKEN';toast(taken?'Trận đấu đã được ghép hoặc yêu cầu tìm trận không còn hiệu lực.':(ack?.message||'Không ghép trận được'),true);refreshQueueSnapshot();
+  });
+}
 
 function inviteRoot(){let root=document.getElementById('qgtChallengeInvites');if(!root){root=document.createElement('div');root.id='qgtChallengeInvites';root.className='qgt-challenge-invites';document.body.appendChild(root);}return root;}
 function incomingOnly(list){return (list||[]).filter(c=>c.status==='pending'&&c.creator?.id!==me?.id);}
@@ -167,7 +205,7 @@ function rpsBoard(s,players,status){const p=Array.isArray(s.picks)?s.picks:[null
 function installOpenMatchDelegation(){document.addEventListener('click',e=>{const b=e.target.closest?.('[data-qgt-open]');if(b)location.hash=`#match/${b.dataset.qgtOpen}`;});}
 installOpenMatchDelegation();
 
-window.addEventListener('load',async()=>{await loadBasics();await syncClock();setTimeout(()=>{ensureRoute();refreshPendingChallenges(true);syncCurrentParticipantTiming();},160);window.addEventListener('hashchange',()=>setTimeout(ensureRoute,20));
-  const app=document.getElementById('app');if(app)new MutationObserver(()=>{const c=contentRoot();if(location.hash==='#matches'&&c&&!c.dataset.qgtPvpRoute)setTimeout(()=>renderEnhancedMatches(routeSerial),30);const w=location.hash.match(/^#watch\/([0-9a-f-]{36})$/i);if(w&&c&&!c.dataset.qgtPvpRoute)setTimeout(()=>renderSpectator(w[1],routeSerial),30);}).observe(app,{subtree:true,childList:true});
+window.addEventListener('load',async()=>{await loadBasics();await syncClock();await refreshQueueSnapshot();setTimeout(()=>{ensureRoute();refreshPendingChallenges(true);syncCurrentParticipantTiming();renderRealtimeLobbyQueue();},160);window.addEventListener('hashchange',()=>setTimeout(()=>{ensureRoute();if(location.hash==='#lobby')renderRealtimeLobbyQueue();},20));
+  const app=document.getElementById('app');if(app)new MutationObserver(()=>{const c=contentRoot();if(location.hash==='#matches'&&c&&!c.dataset.qgtPvpRoute)setTimeout(()=>renderEnhancedMatches(routeSerial),30);const w=location.hash.match(/^#watch\/([0-9a-f-]{36})$/i);if(w&&c&&!c.dataset.qgtPvpRoute)setTimeout(()=>renderSpectator(w[1],routeSerial),30);if((!location.hash||location.hash==='#lobby')&&c)setTimeout(renderRealtimeLobbyQueue,0);}).observe(app,{subtree:true,childList:true});
 });
 })();

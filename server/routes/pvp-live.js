@@ -5,6 +5,9 @@ import { requireAuth, rateLimit } from '../middleware/auth.js';
 import { allGameMap } from '../catalog.js';
 import { getMatchForUser, checkMatchTimeout, getPublicMatchResult } from '../services/matches.js';
 import { getProfileProgress } from '../services/rewards.js';
+import { joinQueueTarget } from '../services/matchmaking.js';
+import { getPlayStatus } from '../services/site.js';
+import { fixedWindowLimit } from '../rate-limit.js';
 
 const router=express.Router();
 const AI_ID='00000000-0000-0000-0000-000000000000';
@@ -14,6 +17,7 @@ const spectatorRooms=new Map();
 let spectatorTicker=null,spectatorBusy=false;
 let deadlineTicker=null;
 let deadlineBusy=false;
+let queueTicker=null,queueBusy=false,queueFingerprint='';
 
 router.use(requireAuth);
 router.use(rateLimit({prefix:'pvp-live-api',limit:360,windowSeconds:60,keyFn:req=>req.session.userId}));
@@ -90,6 +94,36 @@ async function spectatorSnapshot(matchId,userId,session){
   return rows[0]?snapshotFromRow(rows[0]):null;
 }
 
+
+async function queueRows(){
+  const {rows}=await pool.query(`SELECT q.game_key,q.joined_at,u.id,u.display_name name,u.avatar_url,u.is_test
+    FROM match_queue q JOIN users u ON u.id=q.user_id
+    WHERE u.status='active' ORDER BY q.joined_at ASC,u.id ASC LIMIT 100`);
+  return rows.map(r=>({id:r.id,name:r.name,avatar_url:r.avatar_url,game_key:r.game_key,joined_at:r.joined_at,is_test:Number(r.is_test||0)===1}));
+}
+function queueSnapshotFor(rows,mode){
+  const users=mode==='test'?rows.filter(r=>r.is_test):rows.filter(r=>!r.is_test);
+  const counts=new Map();for(const u of users)counts.set(u.game_key,(counts.get(u.game_key)||0)+1);
+  return {users:users.map(({is_test,...u})=>u),queues:[...counts].map(([game_key,waiting])=>({game_key,waiting})),serverNowMs:Date.now()};
+}
+async function socketQueueMode(userId,session){
+  const row=(await pool.query('SELECT role,is_test FROM users WHERE id=$1',[userId])).rows[0];
+  if(row?.role==='admin')return 'admin';
+  if(Number(row?.is_test)===1&&session?.testSession===true)return 'test';
+  return 'normal';
+}
+async function emitQueueSnapshotToSocket(socket,mode=null){
+  try{const rows=await queueRows();const m=mode||await socketQueueMode(socket.data.userId||socket.request.session?.userId,socket.request.session);socket.emit('queue:snapshot',queueSnapshotFor(rows,m));}catch{}
+}
+async function broadcastQueueSnapshots(io,force=false){
+  const rows=await queueRows();const fp=JSON.stringify(rows.map(r=>[r.id,r.game_key,String(r.joined_at),r.is_test]));
+  if(!force&&fp===queueFingerprint)return false;queueFingerprint=fp;
+  io.to('qgt:normal').emit('queue:snapshot',queueSnapshotFor(rows,'normal'));
+  io.to('qgt:test').emit('queue:snapshot',queueSnapshotFor(rows,'test'));
+  io.to('qgt:admin').emit('queue:snapshot',queueSnapshotFor(rows,'admin'));
+  return true;
+}
+
 router.get('/pvp/time',async(req,res)=>res.json({serverNowMs:Date.now(),matchDurationMs:MATCH_DURATION_MS}));
 
 // Enhanced participant match endpoint. Mounted before the legacy api router so the existing UI
@@ -154,6 +188,15 @@ function leaveRoom(socket,matchId){if(!matchId)return;socket.leave(`spectate:${m
 export function installPvpLiveSockets(io){
   io.on('connection',socket=>{
     const userId=socket.request.session?.userId;if(!userId)return;
+    (async()=>{try{const mode=await socketQueueMode(userId,socket.request.session);socket.data.qgtQueueMode=mode;socket.join(`qgt:${mode}`);await emitQueueSnapshotToSocket(socket,mode);}catch{}})();
+    socket.on('queue:join-target',async(payload,ack=()=>{})=>{try{
+      const play=await getPlayStatus();const role=(await pool.query('SELECT role FROM users WHERE id=$1',[userId])).rows[0]?.role;if(!play.open&&role!=='admin')return ack({ok:false,error:'PLAY_CLOSED',message:play.message});
+      const limited=await fixedWindowLimit(`socket-queue-target:${userId}`,20,60);if(!limited.allowed)return ack({ok:false,error:'RATE_LIMITED',message:'Thao tác quá nhanh'});
+      const gameKey=String(payload?.gameKey||'').slice(0,40),targetUserId=uuid.parse(payload?.targetUserId);
+      const result=await joinQueueTarget(userId,targetUserId,gameKey);
+      io.to(`user:${userId}`).emit('match:created',{matchId:result.matchId,matchmaking:true});io.to(`user:${result.opponentId}`).emit('match:created',{matchId:result.matchId,matchmaking:true});
+      await broadcastQueueSnapshots(io,true);ack({ok:true,...result});
+    }catch(e){await broadcastQueueSnapshots(io,true).catch(()=>{});ack({ok:false,error:e.code||'QUEUE_FAILED',message:e.status&&e.status<500?e.message:'Không ghép trận được'});}});
     socket.on('spectate:join',async(payload,ack=()=>{})=>{try{
       const id=uuid.parse(payload?.matchId);const snapshot=await spectatorSnapshot(id,userId,socket.request.session);if(!snapshot)return ack({ok:false,error:'MATCH_NOT_FOUND'});
       if(socket.data.spectatingMatchId&&socket.data.spectatingMatchId!==id)leaveRoom(socket,socket.data.spectatingMatchId);
@@ -197,6 +240,13 @@ export function startPvpDeadlineWatch(io){
       for(const r of rows){try{const result=await checkMatchTimeout(r.id);if(result)await notifyTimedOut(io,r.id);}catch(e){console.error(JSON.stringify({level:'error',event:'pvp_deadline_watch',matchId:r.id,message:e.message}));}}
     }finally{deadlineBusy=false;}
   },250);
+}
+
+
+export function startQueueRealtimeWatch(io){
+  if(queueTicker)return;
+  queueTicker=setInterval(async()=>{if(queueBusy)return;queueBusy=true;try{await broadcastQueueSnapshots(io,false);}catch(e){console.error(JSON.stringify({level:'error',event:'queue_realtime_watch',message:e.message}));}finally{queueBusy=false;}},350);
+  broadcastQueueSnapshots(io,true).catch(()=>{});
 }
 
 export default router;

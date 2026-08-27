@@ -76,8 +76,15 @@ router.get('/lobby/users',requireAuth,async(req,res)=>{
   res.json({users:rows.map(r=>({id:r.id,name:r.display_name,avatarUrl:r.avatar_url,officeGroup:r.office_group_id?{id:r.office_group_id,name:r.office_name}:null,xp:Number(r.xp),points:Number(r.points),online:presence.has(r.id)}))});
 });
 
+router.get('/matchmaking/status',requireAuth,async(req,res)=>{
+  const mode=await viewerMode(req),where=mode==='test'?'u.is_test=1':'u.is_test=0';
+  const {rows}=await pool.query(`SELECT q.game_key,COUNT(*) waiting FROM match_queue q JOIN users u ON u.id=q.user_id
+    WHERE u.status='active' AND ${where} GROUP BY q.game_key`);
+  res.json({queues:rows.map(r=>({...r,waiting:Number(r.waiting)}))});
+});
+
 router.get('/matchmaking/users',requireAuth,async(req,res)=>{
-  const mode=await viewerMode(req),where=visibilitySql(mode,'u');
+  const mode=await viewerMode(req),where=mode==='test'?'u.is_test=1':'u.is_test=0';
   const {rows}=await pool.query(`SELECT q.game_key,q.joined_at,u.id,u.display_name name,u.avatar_url
     FROM match_queue q JOIN users u ON u.id=q.user_id
     WHERE u.status='active' AND ${where} ORDER BY q.joined_at ASC LIMIT 30`);
@@ -99,10 +106,9 @@ router.get('/leaderboards/offices',requireAuth,async(req,res)=>{
 });
 
 router.get('/leaderboards/progression',requireAuth,async(req,res)=>{
-  const mode=await viewerMode(req),where=visibilitySql(mode,'u');
   const {rows}=await pool.query(`SELECT u.id,u.display_name name,u.avatar_url,o.name office_name,u.xp,u.points,u.total_games
     FROM users u LEFT JOIN office_groups o ON o.id=u.office_group_id
-    WHERE u.status='active' AND u.id<>$1 AND ${where}
+    WHERE u.status='active' AND u.id<>$1 AND u.is_test=0
     ORDER BY u.xp DESC,u.points DESC LIMIT 100`,[AI_ID]);
   res.json({leaderboard:rows});
 });
@@ -113,16 +119,15 @@ router.get('/leaderboards/users',requireAuth,async(req,res)=>{
   const cfg=(await pool.query('SELECT enabled,leaderboard_enabled FROM game_configs WHERE game_key=$1',[gameKey])).rows[0];
   if(!cfg?.enabled)return res.status(404).json({error:'GAME_DISABLED',message:'Game đang được admin ẩn.'});
   if(!cfg?.leaderboard_enabled)return res.status(404).json({error:'LEADERBOARD_DISABLED',message:'BXH của game đang tắt.'});
-  const mode=await viewerMode(req),where=visibilitySql(mode,'u');
   if(games.has(gameKey)){
     const {rows}=await pool.query(`SELECT u.id,u.display_name name,u.avatar_url,o.name office_name,r.rating,r.played,r.wins,r.losses,r.draws
       FROM ratings r JOIN users u ON u.id=r.user_id LEFT JOIN office_groups o ON o.id=u.office_group_id
-      WHERE r.game_key=$1 AND u.id<>$2 AND ${where} ORDER BY r.rating DESC,r.played DESC LIMIT 100`,[gameKey,AI_ID]);
+      WHERE r.game_key=$1 AND u.id<>$2 AND u.is_test=0 ORDER BY r.rating DESC,r.played DESC LIMIT 100`,[gameKey,AI_ID]);
     return res.json({type:'rating',leaderboard:rows});
   }
   const {rows}=await pool.query(`SELECT u.id,u.display_name name,u.avatar_url,o.name office_name,s.best_score,s.plays,s.last_score,s.updated_at
     FROM game_scores s JOIN users u ON u.id=s.user_id LEFT JOIN office_groups o ON o.id=u.office_group_id
-    WHERE s.game_key=$1 AND u.id<>$2 AND ${where} ORDER BY s.best_score DESC,s.updated_at ASC LIMIT 100`,[gameKey,AI_ID]);
+    WHERE s.game_key=$1 AND u.id<>$2 AND u.is_test=0 ORDER BY s.best_score DESC,s.updated_at ASC LIMIT 100`,[gameKey,AI_ID]);
   res.json({type:'score',leaderboard:rows});
 });
 

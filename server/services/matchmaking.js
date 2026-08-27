@@ -7,6 +7,35 @@ export async function joinQueue(userId,gameKey){
   const result=await withTransaction(async client=>{await client.query('DELETE FROM match_queue WHERE user_id=$1',[userId]);const self=(await client.query('SELECT is_test FROM users WHERE id=$1 FOR UPDATE',[userId])).rows[0];if(!self)throw err(404,'Không tìm thấy user','USER_NOT_FOUND');const isTest=Number(self.is_test)===1?1:0;const opponent=(await client.query(`SELECT q.user_id FROM match_queue q JOIN users u ON u.id=q.user_id WHERE q.game_key=$1 AND q.user_id<>$2 AND u.status='active' AND u.is_test=$3 ORDER BY q.joined_at ASC LIMIT 1 FOR UPDATE`,[gameKey,userId,isTest])).rows[0];if(!opponent){await client.query('INSERT INTO match_queue(user_id,game_key) VALUES($1,$2)',[userId,gameKey]);return {matched:false};}await client.query('DELETE FROM match_queue WHERE user_id IN ($1,$2)',[userId,opponent.user_id]);const matchId=await createMatch(client,gameKey,userId,opponent.user_id);return {matched:true,matchId,opponentId:opponent.user_id};});
   await audit(userId,'matchmaking.join',result.matchId||null,{gameKey,matched:result.matched});return result;
 }
+
+export async function joinQueueTarget(userId,targetUserId,gameKey){
+  if(!games.has(gameKey))throw err(400,'Game này chưa hỗ trợ PvP online','UNSUPPORTED_GAME');
+  if(!targetUserId||targetUserId===userId)throw err(400,'Yêu cầu tìm trận không hợp lệ','BAD_QUEUE_TARGET');
+  const cfg=(await pool.query('SELECT enabled FROM game_configs WHERE game_key=$1',[gameKey])).rows[0];
+  if(!cfg?.enabled)throw err(423,'Game đang tắt','GAME_DISABLED');
+  const active=await pool.query("SELECT 1 FROM matches WHERE status='active' AND (player1_id=$1 OR player2_id=$1) LIMIT 1",[userId]);
+  if(active.rowCount)throw err(409,'Bạn đang có trận chưa kết thúc','ACTIVE_MATCH');
+  const result=await withTransaction(async client=>{
+    const self=(await client.query('SELECT is_test,status FROM users WHERE id=$1 FOR UPDATE',[userId])).rows[0];
+    if(!self||self.status!=='active')throw err(403,'Tài khoản không hoạt động','ACCOUNT_SUSPENDED');
+    const target=(await client.query(`SELECT q.user_id,q.game_key,u.is_test,u.status
+      FROM match_queue q JOIN users u ON u.id=q.user_id
+      WHERE q.user_id=$1 AND q.game_key=$2 FOR UPDATE`,[targetUserId,gameKey])).rows[0];
+    if(!target||target.status!=='active')throw err(409,'Trận đấu đã được ghép hoặc yêu cầu tìm trận không còn hiệu lực.','QUEUE_REQUEST_TAKEN');
+    if(Number(target.is_test)!==Number(self.is_test))throw err(409,'Yêu cầu tìm trận không còn khả dụng.','QUEUE_REQUEST_TAKEN');
+    const targetActive=await client.query("SELECT 1 FROM matches WHERE status='active' AND (player1_id=$1 OR player2_id=$1) LIMIT 1",[targetUserId]);
+    if(targetActive.rowCount){await client.query('DELETE FROM match_queue WHERE user_id=$1',[targetUserId]);return {stale:true};}
+    await client.query('DELETE FROM match_queue WHERE user_id=$1',[userId]);
+    const removed=await client.query('DELETE FROM match_queue WHERE user_id=$1 AND game_key=$2',[targetUserId,gameKey]);
+    if(!removed.rowCount)throw err(409,'Trận đấu đã được ghép hoặc yêu cầu tìm trận không còn hiệu lực.','QUEUE_REQUEST_TAKEN');
+    const matchId=await createMatch(client,gameKey,userId,targetUserId);
+    return {matched:true,matchId,opponentId:targetUserId};
+  });
+  if(result?.stale)throw err(409,'Trận đấu đã được ghép hoặc yêu cầu tìm trận không còn hiệu lực.','QUEUE_REQUEST_TAKEN');
+  await audit(userId,'matchmaking.join_target',result.matchId,{gameKey,targetUserId,matched:true});
+  return result;
+}
+
 export async function leaveQueue(userId){await pool.query('DELETE FROM match_queue WHERE user_id=$1',[userId]);return {ok:true};}
 export async function queueStatus(){const {rows}=await pool.query('SELECT game_key,COUNT(*) waiting FROM match_queue q JOIN users u ON u.id=q.user_id WHERE u.is_test=0 GROUP BY game_key');return rows.map(r=>({...r,waiting:Number(r.waiting)}));}
 export async function queueUsers(){const {rows}=await pool.query(`SELECT q.game_key,q.joined_at,u.id,u.display_name name,u.avatar_url FROM match_queue q JOIN users u ON u.id=q.user_id WHERE u.status='active' AND u.is_test=0 ORDER BY q.joined_at ASC LIMIT 30`);return rows;}
