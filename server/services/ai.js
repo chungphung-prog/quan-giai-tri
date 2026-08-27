@@ -4,19 +4,22 @@ import { getGame } from '../games/index.js';
 import { GameRuleError } from '../games/common.js';
 
 export const AI_PLAYER_ID='00000000-0000-0000-0000-000000000000';
-const MAX_AI_GAMES=new Set(['chess','xiangqi','caro']);
+const MAX_AI_GAMES=new Set(['caro']);
+const MEDIUM_AI_GAMES=new Set(['chess','xiangqi']);
 const SEARCH_TIMEOUT=Symbol('SEARCH_TIMEOUT');
 
 export async function ensureAiPlayer(){
   await pool.query(`INSERT IGNORE INTO users(id,google_sub,email,display_name,avatar_url,role,status,office_group_id)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[AI_PLAYER_ID,'ai-bot-internal','ai-bot@system.internal','AI Bot',null,'user','active',null]);
-  // These three games are intentionally locked at maximum server-side AI strength.
-  await pool.query("UPDATE game_configs SET ai_difficulty='impossible' WHERE game_key IN ('chess','xiangqi','caro')");
+  // Caro stays MAX; chess/xiangqi are deliberately capped at medium strength to protect server CPU.
+  await pool.query("UPDATE game_configs SET ai_difficulty='impossible' WHERE game_key='caro'");
+  await pool.query("UPDATE game_configs SET ai_difficulty='hard' WHERE game_key IN ('chess','xiangqi')");
 }
 export function isAiPlayer(userId){return userId===AI_PLAYER_ID;}
 
 async function getAiDifficulty(gameKey){
   if(MAX_AI_GAMES.has(gameKey))return 'impossible';
+  if(MEDIUM_AI_GAMES.has(gameKey))return 'hard';
   const {rows}=await pool.query('SELECT ai_difficulty FROM game_configs WHERE game_key=$1',[gameKey]);
   return rows[0]?.ai_difficulty||'nightmare';
 }
@@ -189,6 +192,32 @@ function alphaBeta(game,state,ai,kind,depth,alpha,beta,deadline,ply=0){
   }
   return best;
 }
+// Medium board AI: one-ply positional evaluation + cheap opponent threat scan.
+// It deliberately avoids deep alpha-beta search so multiple concurrent AI games do not block Node's event loop.
+function mediumReplyThreat(state,ai,kind){
+  const opp=1-ai,candidates=generateCandidates(kind,state,opp);let biggest=0;
+  for(const m of candidates){const target=state.board[m.to];if(target&&boardSide(kind,target)===ai){const victim=pieceValue(kind,target),attacker=pieceValue(kind,state.board[m.from]);biggest=Math.max(biggest,victim-Math.min(victim*.35,attacker*.08));}}
+  return Math.max(0,biggest);
+}
+function mediumBoardMove(game,state,ai,legalMoves,kind){
+  // Hard ceiling is intentionally tiny compared with the former 900/1050ms MAX search.
+  const budget=kind==='chess'?90:110,deadline=Date.now()+budget,rootLimit=kind==='chess'?18:20;
+  const root=[...legalMoves].sort((a,b)=>moveOrderScore(state,b,kind)-moveOrderScore(state,a,kind)).slice(0,rootLimit);
+  let best=root[0]||legalMoves[0],bestScore=-Infinity;
+  for(const m of root){
+    if(Date.now()>deadline)break;
+    let applied;try{applied=game.apply(state,m,ai);}catch{continue;}
+    if(applied.result?.winnerIndex===ai)return m;
+    if(applied.result?.winnerIndex===1-ai)continue;
+    const target=state.board[m.to],captureBonus=target?pieceValue(kind,target)*.12:0;
+    const checkBonus=applied.state.inCheck&&applied.state.turn===1-ai?(kind==='chess'?85:95):0;
+    const threatPenalty=mediumReplyThreat(applied.state,ai,kind)*(kind==='chess'?.72:.68);
+    const score=staticEval(game,applied.state,ai,kind)+captureBonus+checkBonus+moveOrderScore(state,m,kind)*.08-threatPenalty;
+    if(score>bestScore){bestScore=score;best=m;}
+  }
+  return best;
+}
+
 function maxBoardMove(game,state,ai,legalMoves,kind){
   const info=materialEval(state,ai,kind),budget=kind==='chess'?900:1050,deadline=Date.now()+budget;
   let root=[...legalMoves].sort((a,b)=>moveOrderScore(state,b,kind)-moveOrderScore(state,a,kind)),best=root[0],bestScore=-Infinity;
@@ -220,8 +249,8 @@ function reversiBest(game,state,ai,legalMoves){const weights=[120,-20,20,5,5,20,
 function selectBestMove(game,state,ai,legalMoves){
   switch(game.key){
     case 'caro':return maxCaroMove(state,ai,legalMoves);
-    case 'chess':return maxBoardMove(game,state,ai,legalMoves,'chess');
-    case 'xiangqi':return maxBoardMove(game,state,ai,legalMoves,'xiangqi');
+    case 'chess':return mediumBoardMove(game,state,ai,legalMoves,'chess');
+    case 'xiangqi':return mediumBoardMove(game,state,ai,legalMoves,'xiangqi');
     case 'ttt':return tttBest(game,state,ai,legalMoves);
     case 'connect4':return connect4Best(game,state,ai,legalMoves);
     case 'reversi':return reversiBest(game,state,ai,legalMoves);
@@ -233,7 +262,8 @@ export async function computeAiMove(state,gameKey,aiPlayerIndex){
   const game=getGame(gameKey),difficulty=await getAiDifficulty(gameKey),legalMoves=enumerateLegalMoves(game,state,aiPlayerIndex);
   if(!legalMoves.length)return {state,result:null,action:null};
   let selectedAction;
-  if(MAX_AI_GAMES.has(gameKey)||difficulty==='impossible')selectedAction=selectBestMove(game,state,aiPlayerIndex,legalMoves);
+  if(MEDIUM_AI_GAMES.has(gameKey))selectedAction=selectBestMove(game,state,aiPlayerIndex,legalMoves);
+  else if(MAX_AI_GAMES.has(gameKey)||difficulty==='impossible')selectedAction=selectBestMove(game,state,aiPlayerIndex,legalMoves);
   else if(difficulty==='nightmare')selectedAction=Math.random()<.9?selectBestMove(game,state,aiPlayerIndex,legalMoves):randomChoice(legalMoves);
   else selectedAction=Math.random()<.7?selectBestMove(game,state,aiPlayerIndex,legalMoves):randomChoice(legalMoves);
   const applied=game.apply(state,selectedAction,aiPlayerIndex);return {state:applied.state,result:applied.result||null,action:selectedAction};
