@@ -1,0 +1,18 @@
+/* v4.1.8 — deterministic RPS suspense flow */
+.rps-flow-owned{width:100%;min-height:270px;display:flex;align-items:center;justify-content:center}
+.rps-flow{width:100%;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:270px}
+.rps-flow-caption{font-size:9px;font-weight:900;letter-spacing:.18em;color:#a99cff;margin-bottom:6px}
+.rps-flow .rps-reveal{width:100%;min-height:205px}
+.rps-side{min-width:145px;display:flex;flex-direction:column;align-items:center;gap:6px}
+.rps-side small{font-size:8px;letter-spacing:.16em;color:#6f7890;font-weight:900}
+.rps-side b{font-size:9px;letter-spacing:.14em;color:#c9c1ff}
+.rps-flow .rps-hand{font-size:78px;filter:drop-shadow(0 12px 24px rgba(0,0,0,.28))}
+.rps-flow .rps-cycling{animation:rpsCyclePulse .32s ease-in-out infinite alternate}
+.rps-flow .bounce-in{animation:rpsBounceIn .62s cubic-bezier(.2,1.65,.35,1) both}
+.rps-flow-result .rps-result-text{font-size:26px;animation:rpsResultPop .35s cubic-bezier(.2,1.4,.35,1) both}
+.turn-banner.rps-suspense{border-color:rgba(123,97,255,.3);color:#c8bfff;background:linear-gradient(135deg,rgba(123,97,255,.12),rgba(123,97,255,.035));animation:rpsBannerPulse 1s ease-in-out infinite alternate}
+@keyframes rpsCyclePulse{from{transform:translateY(-5px) scale(.94);opacity:.72}to{transform:translateY(5px) scale(1.06);opacity:1}}
+@keyframes rpsBounceIn{0%{transform:scale(.2) rotate(-16deg);opacity:0}58%{transform:scale(1.28) rotate(5deg);opacity:1}78%{transform:scale(.92) rotate(-2deg)}100%{transform:scale(1) rotate(0)}}
+@keyframes rpsResultPop{from{transform:scale(.7);opacity:0}to{transform:scale(1);opacity:1}}
+@keyframes rpsBannerPulse{from{box-shadow:0 0 0 rgba(123,97,255,0)}to{box-shadow:0 0 28px rgba(123,97,255,.13)}}
+@media(max-width:560px){.rps-flow-owned,.rps-flow{min-height:235px}.rps-flow .rps-reveal{gap:10px;min-height:170px}.rps-side{min-width:90px}.rps-flow .rps-hand{font-size:min(17vw,64px)}.rps-flow .rps-vs-text{font-size:18px}.rps-flow-result .rps-result-text{font-size:22px}}
