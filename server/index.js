@@ -14,6 +14,7 @@ import { requireAuth, requirePlayOpen, csrf, rateLimit } from './middleware/auth
 import apiRouter from './routes/api.js';
 import adminExtraRouter,{ensureAdminExtraMigrations} from './routes/admin-extra.js';
 import testUsersRouter,{ensureTestUsers,handleTestLogin,installTestEventGuard} from './routes/test-users.js';
+import pvpLiveRouter,{installPvpLiveSockets,startPvpDeadlineWatch} from './routes/pvp-live.js';
 import { configureSockets } from './sockets.js';
 import { ensureAiPlayer } from './services/ai.js';
 import { ensureProgressionV2 } from './services/progression-v2.js';
@@ -34,6 +35,7 @@ await ensureAiPlayer();
 const sessionMiddleware=session({name:config.isProd?'__Host-qgt.sid':'qgt.sid',secret:config.sessionSecret,store:createSessionStore(),resave:false,saveUninitialized:false,rolling:true,proxy:config.isProd?true:undefined,cookie:{httpOnly:true,secure:config.isProd,sameSite:'lax',path:'/',maxAge:config.sessionMaxAgeMs}});app.use(sessionMiddleware);
 app.get('/auth/google',rateLimit({prefix:'auth-start',limit:20,windowSeconds:600}),startGoogle);app.get('/auth/google/callback',rateLimit({prefix:'auth-callback',limit:30,windowSeconds:600}),googleCallback);app.get('/auth/test-login',rateLimit({prefix:'auth-test-login',limit:30,windowSeconds:600}),handleTestLogin);app.post('/auth/logout',requireAuth,csrf,logout);
 app.use('/api',testUsersRouter);
+app.use('/api',pvpLiveRouter);
 app.use('/api',apiRouter);
 app.use('/api',adminExtraRouter);
 app.use('/solo',requireAuth,requirePlayOpen,express.static(path.join(publicDir,'solo'),{index:'index.html',maxAge:0}));
@@ -47,7 +49,7 @@ function socketRequestAllowed(req){
   const host=String(req.headers.host||'').trim().toLowerCase();
   return host===appUrl.host.toLowerCase();
 }
-const io=new SocketIOServer(server,{serveClient:true,maxHttpBufferSize:config.maxSocketPayloadBytes,perMessageDeflate:false,cors:{origin:config.appOrigin,credentials:true,methods:['GET','POST']},allowRequest:(req,callback)=>callback(null,socketRequestAllowed(req))});io.engine.use(sessionMiddleware);app.set('io',io);installTestEventGuard(io);configureSockets(io,presence);
+const io=new SocketIOServer(server,{serveClient:true,maxHttpBufferSize:config.maxSocketPayloadBytes,perMessageDeflate:false,cors:{origin:config.appOrigin,credentials:true,methods:['GET','POST']},allowRequest:(req,callback)=>callback(null,socketRequestAllowed(req))});io.engine.use(sessionMiddleware);app.set('io',io);installTestEventGuard(io);configureSockets(io,presence);installPvpLiveSockets(io);startPvpDeadlineWatch(io);
 app.use((error,req,res,next)=>{void next;const status=Number(error.status)||500,requestId=req.get('x-request-id')||crypto.randomUUID();console.error(JSON.stringify({level:'error',event:'request_error',requestId,status,path:req.path,method:req.method,code:error.code||null,message:error.message}));if(res.headersSent)return;res.status(status).json({error:status<500?(error.code||'REQUEST_FAILED'):'INTERNAL_ERROR',message:status<500?error.message:'Có lỗi máy chủ.',requestId,...(error.details?{details:error.details}:{})});});
 server.listen(config.port,()=>console.log(JSON.stringify({level:'info',event:'server_started',port:config.port,origin:config.appOrigin,hostedDomain:config.hostedDomain})));
 async function shutdown(signal){console.log(JSON.stringify({level:'info',event:'shutdown',signal}));io.close();server.close();await pool.end();process.exit(0);}process.on('SIGTERM',()=>shutdown('SIGTERM'));process.on('SIGINT',()=>shutdown('SIGINT'));
