@@ -1,0 +1,85 @@
+  const GAME_GUIDES={
+    chess:['Di chuyển quân theo luật cờ vua và bảo vệ vua của mình.','Chiếu bí hoặc bắt được vua theo luật mini của game để giành chiến thắng.'],
+    xiangqi:['Hai người thay phiên di chuyển quân theo luật cờ tướng mini.','Dùng xe, pháo, mã và tốt để gây sức ép, bắt tướng đối phương để thắng.'],
+    caro:['Hai người thay phiên đặt X/O trên bàn 15×15.','Người đầu tiên tạo được 5 quân liên tiếp theo hàng, cột hoặc đường chéo sẽ thắng.'],
+    ttt:['Hai người lần lượt đặt X và O vào lưới 3×3.','Tạo một hàng 3 quân trước đối thủ để chiến thắng.'],
+    connect4:['Chọn cột để thả quân xuống đáy.','Nối 4 quân cùng màu theo ngang, dọc hoặc chéo trước đối thủ.'],
+    reversi:['Đặt quân để kẹp quân đối phương giữa hai quân của bạn.','Khi hết nước đi, bên có nhiều quân hơn sẽ thắng.'],
+    battleship:['Bắn từng ô trên lưới để tìm hạm đội ẩn.','Ghi nhớ các phát trúng và đánh chìm toàn bộ tàu với ít phát bắn nhất.'],
+    sudoku:['Chọn ô trống và nhập số 1–9; số đúng sẽ được khóa lại.','Bạn chỉ được sai tối đa 3 lần và được dùng Gợi ý tối đa 2 lần.','Hoàn thành toàn bộ bảng trước khi đủ 3 lỗi để nhận điểm.'],
+    mines:['Mở các ô an toàn và dùng con số để suy luận vị trí mìn.','Chuột phải để cắm cờ; mở hết các ô không có mìn để thắng.'],
+    '2048':['Dùng phím mũi tên/WASD hoặc nút điều hướng để trượt toàn bộ ô.','Hai ô cùng số chạm nhau sẽ nhập thành một ô lớn hơn.','Giữ bàn không bị kín và cố tạo ô 2048 hoặc cao hơn.'],
+    memory:['Lật hai thẻ mỗi lượt và ghi nhớ vị trí hình.','Ghép đủ tất cả cặp với càng ít lượt lật càng tốt.'],
+    lights:['Nhấn một ô để đổi trạng thái ô đó và các ô kề.','Mục tiêu là tắt toàn bộ đèn với ít lượt nhất.'],
+    hanoi:['Chọn cọc có đĩa trên cùng rồi chọn cọc đích.','Chỉ được chuyển một đĩa mỗi lượt và không đặt đĩa lớn lên đĩa nhỏ.','Chuyển đủ 5 đĩa sang cọc C; mốc tối ưu là 31 lượt.'],
+    slide:['Nhấn một ô nằm cạnh ô trống để trượt nó.','Sắp xếp các số 1→15 đúng thứ tự và để ô trống ở cuối.'],
+    snake:['Dùng WASD hoặc phím mũi tên để đổi hướng.','Ăn táo để tăng điểm và dài ra; đừng đâm vào tường hoặc thân mình.'],
+    pong:['Di chuyển chuột/chạm dọc màn hình để điều khiển thanh đỡ bên trái.','Đỡ bóng qua lại với máy; bên đầu tiên đạt 7 điểm thắng ván.'],
+    breakout:['Di chuyển thanh đỡ theo chuột/chạm để giữ bóng trên sân.','Phá sạch các viên gạch trước khi bóng rơi khỏi đáy.'],
+    reaction:['Nhấn để bắt đầu và chờ vùng chơi chuyển trạng thái sẵn sàng.','Nhấn ngay khi có tín hiệu; nhấn quá sớm sẽ phải thử lại.'],
+    aim:['Nhấn liên tiếp các mục tiêu xuất hiện trên vùng chơi.','Hoàn thành 20 mục tiêu nhanh nhất có thể.'],
+    wordguess:['Đọc gợi ý và nhập đáp án tiếng Việt không dấu.','Đoán đúng với ít lần thử để có điểm tốt hơn.'],
+    hangman:['Chọn từng chữ cái để mở đáp án.','Tìm đủ từ trước khi dùng hết 6 lượt sai.'],
+    scramble:['Quan sát chuỗi chữ bị xáo trộn.','Sắp xếp lại thành cụm từ đúng rồi bấm kiểm tra.'],
+    emoji:['Quan sát chuỗi emoji và chọn cụm từ phù hợp.','Hoàn thành toàn bộ câu hỏi với số đáp án đúng cao nhất.'],
+    trivia:['Đọc câu hỏi và chọn một trong bốn đáp án.','Hoàn thành bộ câu hỏi để tính tổng số câu đúng.'],
+    typing:['Đọc đoạn văn mẫu rồi gõ chính xác vào ô nhập.','Game kết thúc khi nội dung trùng hoàn toàn; điểm dựa trên WPM.'],
+    rps:['Chọn Búa, Bao hoặc Kéo ở mỗi lượt.','Thắng nhiều round hơn máy trong chuỗi Best of 5.'],
+    dice:['Bấm Tung để lắc xúc xắc.','Theo dõi chuỗi kết quả gần nhất và chơi nhanh theo nhóm nếu muốn.'],
+    coin:['Bấm Tung xu để nhận Ngửa hoặc Sấp.','Theo dõi thống kê hai mặt qua nhiều lần tung.'],
+    higher:['Quan sát lá hiện tại rồi đoán lá tiếp theo cao hơn hay thấp hơn.','Chuỗi dự đoán đúng càng dài thì điểm càng cao.'],
+    guessnum:['Nhập một số từ 1 đến 100.','Dựa vào gợi ý cao hơn/thấp hơn để tìm số bí mật với ít lần đoán nhất.'],
+    bingo:['Bấm Gọi số để rút ngẫu nhiên số từ 1–75.','Dùng danh sách số đã gọi để tổ chức một ván Bingo nhóm.'],
+    spy:['Chọn số người chơi rồi chuyền máy lần lượt để xem vai bí mật.','Sau khi mọi người xem vai, thảo luận để tìm gián điệp.'],
+    wyr:['Đọc câu hỏi hai lựa chọn.','Mỗi người chọn một vế và giải thích lý do để tạo cuộc trò chuyện.'],
+    twotruths:['Đọc chủ đề gợi ý.','Mỗi người nói 3 câu: 2 câu thật và 1 câu giả; cả nhóm đoán câu giả.'],
+    minigo:['Hai người thay phiên đặt quân trên giao điểm bàn 9×9.','Bao vây để bắt quân; chuyền lượt khi không muốn đi và kết thúc để tính điểm.'],
+    dots:['Chọn một cạnh giữa hai chấm để vẽ đường.','Khép kín một ô vuông để ghi điểm và được giữ lượt; nhiều ô hơn sẽ thắng.'],
+    nonogram:['Đọc gợi ý số cho từng hàng và cột.','Click ô để tô, đánh X hoặc xóa cho tới khi bức hình khớp hoàn toàn.'],
+    maze:['Dùng WASD hoặc phím mũi tên để di chuyển.','Tìm đường từ góc xuất phát đến ô đích với ít bước nhất.'],
+    tetris:['Dùng ← → để di chuyển, ↑ để xoay và ↓ để hạ nhanh.','Xếp kín hàng ngang để xóa hàng và ghi điểm.'],
+    flappy:['Nhấn Space, click hoặc chạm để chim vỗ cánh bay lên.','Đi qua khoảng trống giữa các tòa nhà; mỗi cổng vượt qua được tính 1 điểm.'],
+    dino:['Nhấn Space hoặc ↑ để nhảy.','Vượt chướng ngại càng lâu càng tốt mà không va chạm.'],
+    shooter:['Dùng ← → để di chuyển tàu và Space để bắn.','Bắn thiên thạch, tránh va chạm và kiếm điểm trước khi nhiệm vụ kết thúc.'],
+    wordle:['Nhập từ 5 chữ cái rồi bấm Đoán.','Dùng màu gợi ý vị trí chữ cái để tìm đáp án trong tối đa 6 lượt.'],
+    flags:['Quan sát emoji quốc kỳ và chọn đúng tên quốc gia.','Hoàn thành toàn bộ bộ câu hỏi để tính điểm.'],
+    twenty:['Một người bí mật nghĩ về một đồ vật.','Cả nhóm được hỏi tối đa 20 câu Có/Không để đoán đồ vật đó.'],
+    impostor:['Chọn số người chơi và chuyền máy để mỗi người xem từ bí mật.','Một người nhận từ khác; mô tả khéo léo rồi tìm Impostor.'],
+    werewolf:['Chọn số người chơi rồi chuyền máy để xem vai.','Sau khi chia vai xong, dùng luật Ma Sói quen thuộc để tổ chức ván chơi.'],
+    quizbattle:['Hai người thay phiên trả lời cùng một bộ câu hỏi.','Mỗi đáp án đúng ghi 1 điểm; người có nhiều điểm hơn cuối bộ câu hỏi thắng.'],
+    poll:['Chọn một trong hai phương án để cộng vote.','Chuyền máy cho cả nhóm rồi chuyển sang câu tiếp theo.'],
+    wheel:['Nhập mỗi lựa chọn trên một dòng.','Bấm Quay để chọn ngẫu nhiên một mục trong danh sách.'],
+    blackjack:['Chọn Hit để rút thêm bài hoặc Stand để dừng.','Cố đạt gần 21 hơn dealer mà không vượt quá 21.'],
+    pokerdice:['Lắc 5 xúc xắc, click viên muốn giữ.','Bạn có tối đa 3 lượt để tạo bộ Poker Dice có giá trị cao nhất.'],
+    mancala:['Chọn một hố bên phía người đang tới lượt để rải hạt.','Rải lần lượt qua các hố và cố gom nhiều hạt về kho của mình hơn đối thủ.'],
+    jumprace:['Chọn quân rồi di chuyển bằng bước hoặc nhảy hợp lệ.','Đưa toàn bộ quân sang vùng đích đối diện trước đối thủ.'],
+    solitaire:['Chọn hai lá liên tiếp để hoán đổi vị trí.','Sắp xếp cả dãy từ K xuống A với ít lượt đổi nhất.'],
+    stacktower:['Bấm Space, click hoặc chạm đúng lúc khối đang nằm trên tầng dưới.','Phần lệch sẽ bị cắt; đặt càng chuẩn thì khối càng rộng và dễ xây cao.'],
+    fruit:['Click/chạm trái cây trước khi chúng rơi khỏi vùng chơi.','Hụt 5 trái thì ván kết thúc; chém càng nhiều càng tốt.'],
+    dodge:['Dùng ← → để di chuyển nhân vật.','Né các vật thể rơi xuống và sống càng lâu càng tốt.'],
+    wordchain:['Nhập từ mới bắt đầu bằng chữ cái cuối của từ trước.','Không lặp lại từ đã dùng; chuyền lượt để chơi nhóm.'],
+    logoquiz:['Đọc biểu tượng/gợi ý và chọn đúng thương hiệu.','Hoàn thành tất cả câu để ghi điểm.'],
+    movieemoji:['Giải mã chuỗi emoji rồi nhập tên phim.','Đoán đúng càng nhiều phim càng tốt.'],
+    drawguess:['Người vẽ xem từ bí mật rồi dùng canvas để vẽ.','Những người còn lại nhìn tranh và đoán miệng mà không xem từ.'],
+    caption:['Đọc tình huống, mỗi người nhập một caption.','Reveal tất cả caption rồi cả nhóm tự bình chọn câu vui nhất.']
+  };
+  function gameGuideFor(g){
+    if(GAME_GUIDES[g.id])return GAME_GUIDES[g.id];
+    if(/2 người|PvP/i.test(g.mode))return ['Hai người thay phiên thực hiện hành động theo luật hiển thị trong game.','Hoàn thành điều kiện thắng trước đối thủ để kết thúc ván.'];
+    if(g.cat==='Arcade')return ['Dùng phím, chuột hoặc cảm ứng theo hướng dẫn trên màn hình.','Cố sống lâu hoặc ghi điểm cao nhất trước khi ván kết thúc.'];
+    if(g.cat==='Party')return ['Làm theo hướng dẫn trên màn hình và chuyền máy khi game yêu cầu.','Dùng game như công cụ tổ chức lượt chơi cho cả nhóm.'];
+    return ['Đọc mục tiêu hiển thị trong vùng chơi và thực hiện từng bước.','Hoàn thành thử thách với số lượt hoặc thời gian tốt nhất để đạt điểm cao.'];
+  }
+
+  async function renderGame(id){
+    const g=gameById(id); if(!g){location.hash='#/';return}
+    const cfg=gameConfig(id);
+    if(cfg.pvp){location.href='/?pvp='+encodeURIComponent(id);return}
+    if(cfg.enabled===false){app.innerHTML='<div class="empty">Game đang được admin tạm tắt.</div>';return}
+    session.currentRun=null;
+    const guide=gameGuideFor(g);
+    const special=id==='sudoku'?'<div class="rule-alert">❤️ 3 lỗi = thua & không nhận XP/Point <span>•</span> 💡 Gợi ý tối đa 2 lần</div>':'';
+    app.innerHTML=`<div class="game-head game-head-v419"><button class="back-btn" id="backToLibrary">← Kho game</button><div><div class="eyebrow">${escapeHtml(g.cat)} • ${escapeHtml(g.mode)}</div><h1>${g.icon} ${g.name}</h1><p>${escapeHtml(g.desc)}</p>${special}</div></div><div class="game-page"><section id="stage" class="game-stage game-stage-v419"><div class="run-loader"><span></span><b>Đang chuẩn bị bàn chơi…</b></div></section><aside class="side-panel"><div class="panel game-info-panel"><h3>Thông tin trò chơi</h3><div class="mini-stat"><span>Thể loại</span><b>${escapeHtml(g.cat)}</b></div><div class="mini-stat"><span>Chế độ</span><b>${escapeHtml(g.mode)}</b></div><div class="info-copy"><span>Mô tả</span><p>${escapeHtml(g.desc)}</p></div><div class="howto"><span>Cách chơi</span><ol>${guide.map(step=>`<li>${escapeHtml(step)}</li>`).join('')}</ol></div></div><div class="panel"><h3>🏆 BXH ${escapeHtml(g.name)}</h3><div id="onlineLeaderboard" class="history"><span class="muted">Đang tải…</span></div></div><div class="panel"><button class="secondary-btn" id="restartGame" style="width:100%">↻ Chơi lại</button></div></aside></div>`;
+    $('#backToLibrary').onclick=()=>{location.hash='#/';};$('#restartGame').onclick=()=>{try{cleanup()}catch{} cleanup=()=>{};session.currentRun=null;renderGame(id).catch(handleFatal);}; loadLeaderboard(id);
+    try{await beginRun(id);(renderers[id]||(()=>$('#stage').innerHTML='<div class="empty">Game đang cập nhật.</div>'))($('#stage'));}catch(e){$('#stage').innerHTML=`<div class="empty"><h2>Không thể bắt đầu game</h2><p>${escapeHtml(e.message)}</p><a href="/" class="secondary-btn linklike">Về Dashboard</a></div>`}
+  }

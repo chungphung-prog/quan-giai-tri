@@ -1,5 +1,6 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -18,9 +19,28 @@ import pvpLiveRouter,{installPvpLiveSockets,startPvpDeadlineWatch,startQueueReal
 import { configureSockets } from './sockets.js';
 import { ensureAiPlayer } from './services/ai.js';
 import { ensureProgressionV2 } from './services/progression-v2.js';
+import { serveSoloAppV419 } from './services/solo-v419.js';
 const __dirname=path.dirname(fileURLToPath(import.meta.url)),publicDir=path.resolve(__dirname,'../public');
+
+// Build stamp: mỗi lần Node restart sẽ tạo một build id mới và ghi trực tiếp vào
+// index.html vật lý. Cách này vẫn hoạt động khi LiteSpeed phục vụ static file trước Node.
+const buildId=`${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
+function stampBuildAssets(){
+  const files=[path.join(publicDir,'index.html'),path.join(publicDir,'solo','index.html')];
+  for(const file of files){
+    try{
+      let html=fs.readFileSync(file,'utf8');
+      html=html.replace(/([?&]v=)[^"'&\s>]+/g,`$1${buildId}`);
+      fs.writeFileSync(file,html,'utf8');
+    }catch(error){console.error(JSON.stringify({level:'warn',event:'build_stamp_failed',file,message:error.message}));}
+  }
+  try{fs.writeFileSync(path.join(publicDir,'build.json'),JSON.stringify({build:buildId,updatedAt:new Date().toISOString()}),'utf8');}
+  catch(error){console.error(JSON.stringify({level:'warn',event:'build_manifest_failed',message:error.message}));}
+}
+stampBuildAssets();
 const app=express();app.disable('x-powered-by');if(config.trustProxy)app.set('trust proxy',config.trustProxy);
 app.get('/healthz',(req,res)=>res.json({ok:true,service:'quan-giai-tri'}));
+app.get('/build.json',(req,res)=>{res.setHeader('Cache-Control','no-store, max-age=0');res.json({build:buildId,updatedAt:new Date().toISOString()});});
 if(config.isProd)app.use((req,res,next)=>req.secure?next():res.redirect(308,`${config.appOrigin}${req.originalUrl}`));
 const appUrl=new URL(config.appOrigin),wsOrigin=`${appUrl.protocol==='https:'?'wss:':'ws:'}//${appUrl.host}`;
 app.use(helmet({contentSecurityPolicy:{directives:{defaultSrc:["'self'"],scriptSrc:["'self'"],styleSrc:["'self'","'unsafe-inline'"],imgSrc:["'self'",'data:','https://*.googleusercontent.com','https://images.unsplash.com'],mediaSrc:["'self'"],connectSrc:["'self'",wsOrigin],fontSrc:["'self'"],objectSrc:["'none'"],baseUri:["'self'"],frameAncestors:["'none'"],formAction:["'self'"]}},referrerPolicy:{policy:'no-referrer'},hsts:config.isProd?{maxAge:31536000,includeSubDomains:true,preload:false}:false,crossOriginEmbedderPolicy:false}));
@@ -38,9 +58,10 @@ app.use('/api',testUsersRouter);
 app.use('/api',pvpLiveRouter);
 app.use('/api',apiRouter);
 app.use('/api',adminExtraRouter);
+app.get('/solo/app.js',requireAuth,requirePlayOpen,serveSoloAppV419(publicDir));
 app.use('/solo',requireAuth,requirePlayOpen,express.static(path.join(publicDir,'solo'),{index:'index.html',maxAge:0}));
 app.use('/custom',requireAuth,express.static(path.join(publicDir,'custom'),{index:false,maxAge:config.isProd?'1h':0,dotfiles:'deny'}));
-app.use(express.static(publicDir,{index:false,maxAge:config.isProd?'1h':0,dotfiles:'deny'}));
+app.use(express.static(publicDir,{index:false,maxAge:config.isProd?'1h':0,dotfiles:'deny',setHeaders:(res,file)=>{if(/\.(?:html|js|css|json)$/i.test(file))res.setHeader('Cache-Control','no-cache, must-revalidate');}}));
 app.use((req,res)=>{if(req.path.startsWith('/api/'))return res.status(404).json({error:'NOT_FOUND'});if(req.method==='GET')return res.sendFile(path.join(publicDir,'index.html'));res.status(404).json({error:'NOT_FOUND'});});
 const server=http.createServer(app),presence=new Map();app.set('presence',presence);
 function socketRequestAllowed(req){

@@ -1,0 +1,64 @@
+  register('sudoku', stage=>{
+    function countSolutions(board,limit=2){
+      let best=-1,bestOpts=null;
+      for(let i=0;i<81;i++){
+        if(board[i])continue;
+        const r=Math.floor(i/9),c=i%9,used=new Set();
+        for(let k=0;k<9;k++){used.add(board[r*9+k]);used.add(board[k*9+c]);}
+        const br=Math.floor(r/3)*3,bc=Math.floor(c/3)*3;
+        for(let rr=br;rr<br+3;rr++)for(let cc=bc;cc<bc+3;cc++)used.add(board[rr*9+cc]);
+        const opts=[];for(let n=1;n<=9;n++)if(!used.has(n))opts.push(n);
+        if(!opts.length)return 0;
+        if(bestOpts==null||opts.length<bestOpts.length){best=i;bestOpts=opts;if(opts.length===1)break;}
+      }
+      if(best<0)return 1;
+      let total=0;
+      for(const n of bestOpts){board[best]=n;total+=countSolutions(board,limit-total);if(total>=limit)break;}
+      board[best]=0;return total;
+    }
+    function makePuzzle(){
+      const pattern=(r,c)=>(r*3+Math.floor(r/3)+c)%9;
+      const bands=shuffle([0,1,2]),stacks=shuffle([0,1,2]);
+      const rows=bands.flatMap(b=>shuffle([0,1,2]).map(r=>b*3+r));
+      const cols=stacks.flatMap(s=>shuffle([0,1,2]).map(c=>s*3+c));
+      const nums=shuffle([1,2,3,4,5,6,7,8,9]);
+      const solution=rows.flatMap(r=>cols.map(c=>nums[pattern(r,c)]));
+      const puzzle=solution.slice(),order=shuffle(Array.from({length:81},(_,i)=>i));
+      let clues=81;
+      for(const i of order){
+        if(clues<=38)break;
+        const keep=puzzle[i];puzzle[i]=0;
+        if(countSolutions(puzzle.slice(),2)!==1)puzzle[i]=keep;else clues--;
+      }
+      return {solution,puzzle,clues};
+    }
+    const generated=makePuzzle(),sol=generated.solution.join(''),puzzle=generated.puzzle.map(v=>v||0).join('');
+    const boardCode=String(session.currentRun?.seed||Date.now()).slice(-6).padStart(6,'0');
+    let errors=0,hints=0,over=false,won=false,losing=false;
+    stage.innerHTML=`<div class="sudoku-pro"><div class="solo-game-toolbar"><div><div class="eyebrow">FOCUS MODE • BÀN #${escapeHtml(boardCode)}</div><h2>Sudoku Logic Grid</h2></div><div class="solo-stat-row"><div class="solo-stat"><span>Ô gợi sẵn</span><b>${generated.clues}</b></div><div class="solo-stat danger"><span>Lỗi</span><b id="sdkErrors">0 / 3</b></div><div class="solo-stat"><span>Gợi ý</span><b id="sdkHints">0 / 2</b></div></div></div><div class="sudoku-status" id="msg"><span class="status-dot"></span> Bàn mới được tạo từ seed của lượt chơi • điền đúng để khóa ô</div><div class="sudoku-shell"><div id="sdk" class="sudoku sudoku-v2"></div></div><div class="sudoku-actions"><button class="secondary-btn hint-btn" id="hint">💡 Gợi ý <b id="hintLeft">2</b></button><button class="ghost-btn" id="sdkCheck">✓ Kiểm tra tiến độ</button></div></div>`;
+    const box=$('#sdk'),msg=$('#msg'),errEl=$('#sdkErrors'),hintEl=$('#sdkHints'),hintLeft=$('#hintLeft'),hintBtn=$('#hint');
+    const cells=[...puzzle].map((v,i)=>({value:v==='0'?'':v,given:v!=='0',hint:false,correct:v!=='0'}));
+    function render(){
+      box.innerHTML=cells.map((cell,i)=>`<div class="sudoku-cell-wrap ${(Math.floor(i/9)%3===2&&Math.floor(i/9)!==8)?'box-bottom':''} ${(i%9)%3===2&&i%9!==8?'box-right':''}"><input maxlength="1" inputmode="numeric" autocomplete="off" data-i="${i}" class="${cell.given?'given':''} ${cell.hint?'hinted':''} ${cell.correct&&!cell.given&&!cell.hint?'solved':''}" value="${escapeHtml(cell.value)}" ${cell.given||cell.correct||over?'readonly':''}></div>`).join('');
+      $$('input',box).forEach(x=>x.oninput=()=>handleInput(x));
+    }
+    function updateHud(){errEl.textContent=`${errors} / 3`;hintEl.textContent=`${hints} / 2`;hintLeft.textContent=Math.max(0,2-hints);hintBtn.disabled=over||hints>=2;}
+    function finishLose(){
+      if(over)return;over=true;losing=false;msg.className='sudoku-status lost';msg.innerHTML='<span>💥</span><div><b>Hết lượt!</b><small>Bạn đã sai 3 ô. Lượt này không submit kết quả nên không có XP, Point hoặc điểm BXH.</small></div>';
+      updateHud();render();beep(180,.16);
+    }
+    function finishWin(){
+      if(over||won)return;won=true;over=true;const score=Math.max(100,340-errors*45-hints*55);msg.className='sudoku-status won';msg.innerHTML=`<span>🏆</span><div><b>Hoàn thành bàn #${escapeHtml(boardCode)}!</b><small>${errors} lỗi • ${hints} gợi ý • ${score} điểm</small></div>`;updateHud();render();award('sudoku',score,`Sudoku #${boardCode} • ${errors} lỗi • ${hints} gợi ý`);beep(920,.12);
+    }
+    function checkComplete(){if(cells.every((c,i)=>c.value===sol[i]))finishWin();}
+    function handleInput(input){
+      if(over||losing)return;const i=+input.dataset.i;let v=input.value.replace(/[^1-9]/g,'').slice(0,1);input.value=v;if(!v)return;
+      if(v===sol[i]){cells[i].value=v;cells[i].correct=true;input.classList.add('correct-pop');beep(640,.025);setTimeout(()=>{render();checkComplete()},170);return;}
+      errors++;cells[i].value='';input.classList.add('wrong-pop');msg.className='sudoku-status warning';msg.innerHTML=`<span>⚠️</span><div><b>Sai rồi!</b><small>Còn ${Math.max(0,3-errors)} lỗi trước khi thua.</small></div>`;updateHud();beep(220,.07);if(errors>=3)losing=true;setTimeout(()=>{if(errors>=3)finishLose();else{render();msg.className='sudoku-status';msg.innerHTML=`<span class="status-dot"></span> Bàn #${escapeHtml(boardCode)} • điền đúng để khóa ô`; }},320);
+    }
+    hintBtn.onclick=()=>{
+      if(over||losing||hints>=2)return;const empt=cells.map((c,i)=>!c.correct?i:null).filter(i=>i!==null);if(!empt.length)return;const i=empt[Math.floor(rand()*empt.length)];cells[i].value=sol[i];cells[i].correct=true;cells[i].hint=true;hints++;updateHud();render();msg.className='sudoku-status hint-used';msg.innerHTML=`<span>💡</span><div><b>Đã mở một ô</b><small>Bạn còn ${Math.max(0,2-hints)} lượt gợi ý.</small></div>`;beep(760,.05);checkComplete();
+    };
+    $('#sdkCheck').onclick=()=>{if(over)return;const done=cells.filter(c=>c.correct).length,msgLeft=81-done;msg.className='sudoku-status';msg.innerHTML=`<span>🧠</span><div><b>Tiến độ ${done}/81 ô</b><small>Còn ${msgLeft} ô cần hoàn thành • bàn #${escapeHtml(boardCode)}</small></div>`;};
+    updateHud();render();
+  });

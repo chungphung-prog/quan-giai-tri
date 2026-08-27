@@ -1,0 +1,10 @@
+  register('hanoi', stage=>{
+    let pegs=[[5,4,3,2,1],[],[]],sel=-1,moves=0,over=false,best=31;
+    stage.innerHTML=`<div class="hanoi-pro"><div class="solo-game-toolbar"><div><div class="eyebrow">LOGIC TOWER</div><h2>Tháp Hà Nội</h2></div><div class="solo-stat-row"><div class="solo-stat"><span>Lượt</span><b id="m">0</b></div><div class="solo-stat"><span>Tối ưu</span><b>31</b></div></div></div><div id="hanoiMsg" class="message">Chọn cọc nguồn rồi chọn cọc đích</div><div id="hanoi" class="hanoi hanoi-v2"></div></div>`;
+    const box=$('#hanoi'),msg=$('#hanoiMsg');
+    function draw(){
+      box.innerHTML=pegs.map((p,pi)=>`<button class="peg-v2 ${sel===pi?'selected':''}" data-p="${pi}" aria-label="Cọc ${String.fromCharCode(65+pi)}"><div class="peg-label"><b>${String.fromCharCode(65+pi)}</b><span>${pi===2?'ĐÍCH':''}</span></div><div class="tower-pole"></div><div class="tower-base"></div><div class="disk-stack">${p.map(d=>`<span class="disk-v2 d${d}" style="--disk:${d}"><i>${d}</i></span>`).join('')}</div></button>`).join('');
+      $$('.peg-v2',box).forEach(x=>x.onclick=()=>{if(over)return;const p=+x.dataset.p;if(sel<0){if(pegs[p].length){sel=p;msg.textContent=`Đã chọn cọc ${String.fromCharCode(65+p)} • chọn cọc đích`;beep(480,.02)}}else if(sel===p){sel=-1;msg.textContent='Đã bỏ chọn.'}else{const d=pegs[sel][pegs[sel].length-1],top=pegs[p][pegs[p].length-1];if(!top||d<top){pegs[p].push(pegs[sel].pop());moves++;$('#m').textContent=moves;msg.textContent=`Di chuyển đĩa ${d} → cọc ${String.fromCharCode(65+p)}`;beep(620,.025);if(pegs[2].length===5){over=true;const score=Math.max(100,560-moves*8)+(moves===best?100:0);msg.className='message hanoi-win';msg.textContent=moves===best?'🏆 PERFECT! Đúng 31 lượt tối ưu!':`🎉 Hoàn thành trong ${moves} lượt!`;award('hanoi',score,`Tháp Hà Nội ${moves} lượt`)}}else{msg.className='message hanoi-invalid';msg.textContent='⛔ Không thể đặt đĩa lớn lên đĩa nhỏ';beep(180,.05);setTimeout(()=>{msg.className='message';},350)}sel=-1}draw()})
+    }
+    draw();
+  });
