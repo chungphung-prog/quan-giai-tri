@@ -21,8 +21,9 @@ async function unlock(client,userId,key){
   await client.query('UPDATE users SET xp=xp+$2,points=points+$3 WHERE id=$1',[userId,def.xp_reward,def.point_reward]);return {key:def.achievement_key,name:def.name,description:def.description,icon:def.icon,tier:def.tier,xpReward:def.xp_reward,pointReward:def.point_reward};
 }
 export async function evaluateAchievements(userId,extra={}){return withTransaction(async client=>{
-  const u=(await client.query('SELECT xp,total_games FROM users WHERE id=$1 FOR UPDATE',[userId])).rows[0];if(!u)return[];
-  const pvp=Number((await client.query("SELECT COUNT(*) n FROM matches WHERE status='finished' AND (player1_id=$1 OR player2_id=$1)",[userId])).rows[0].n),wins=Number((await client.query("SELECT COUNT(*) n FROM matches WHERE status='finished' AND winner_id=$1",[userId])).rows[0].n),chats=Number((await client.query('SELECT COUNT(*) n FROM chat_messages WHERE user_id=$1 AND deleted_at IS NULL',[userId])).rows[0].n),level=levelFromXp(u.xp);
+  const u=(await client.query('SELECT xp,total_games,COALESCE(progress_reset_at,created_at) progress_reset_at FROM users WHERE id=$1 FOR UPDATE',[userId])).rows[0];if(!u)return[];
+  const resetAt=u.progress_reset_at;
+  const pvp=Number((await client.query("SELECT COUNT(*) n FROM matches WHERE status='finished' AND (player1_id=$1 OR player2_id=$1) AND COALESCE(finished_at,created_at)>=$2",[userId,resetAt])).rows[0].n),wins=Number((await client.query("SELECT COUNT(*) n FROM matches WHERE status='finished' AND winner_id=$1 AND COALESCE(finished_at,created_at)>=$2",[userId,resetAt])).rows[0].n),chats=Number((await client.query('SELECT COUNT(*) n FROM chat_messages WHERE user_id=$1 AND deleted_at IS NULL AND created_at>=$2',[userId,resetAt])).rows[0].n),level=levelFromXp(u.xp);
   const keys=[];if(Number(u.total_games)>=1)keys.push('first_game');if(wins>=1)keys.push('first_win');if(pvp>=10)keys.push('pvp_10');if(pvp>=50)keys.push('pvp_50');if(level>=5)keys.push('level_5');if(level>=10)keys.push('level_10');if(chats>=25)keys.push('chat_25');if(Number(extra.score)>=1000)keys.push('score_1000');const out=[];for(const key of keys){const a=await unlock(client,userId,key);if(a)out.push(a);}return out;
 });}
 export async function rewardSolo({userId,runId,gameKey,score,multiplier=1,pointMultiplier=1}){
