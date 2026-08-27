@@ -3,699 +3,238 @@ import { pool } from '../db.js';
 import { getGame } from '../games/index.js';
 import { GameRuleError } from '../games/common.js';
 
-/**
- * Well-known UUID for the AI player.
- * This constant is used across the system to identify AI-controlled matches.
- */
-export const AI_PLAYER_ID = '00000000-0000-0000-0000-000000000000';
+export const AI_PLAYER_ID='00000000-0000-0000-0000-000000000000';
+const MAX_AI_GAMES=new Set(['chess','xiangqi','caro']);
+const SEARCH_TIMEOUT=Symbol('SEARCH_TIMEOUT');
 
-/**
- * Ensures the AI player user record exists in the database.
- * Uses INSERT IGNORE so it's idempotent — safe to call on every startup.
- */
-export async function ensureAiPlayer() {
-  await pool.query(
-    `INSERT IGNORE INTO users (id, google_sub, email, display_name, avatar_url, role, status, office_group_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [
-      AI_PLAYER_ID,
-      'ai-bot-internal',
-      'ai-bot@system.internal',
-      'AI Bot',
-      null,
-      'user',
-      'active',
-      null
-    ]
-  );
+export async function ensureAiPlayer(){
+  await pool.query(`INSERT IGNORE INTO users(id,google_sub,email,display_name,avatar_url,role,status,office_group_id)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[AI_PLAYER_ID,'ai-bot-internal','ai-bot@system.internal','AI Bot',null,'user','active',null]);
+  // These three games are intentionally locked at maximum server-side AI strength.
+  await pool.query("UPDATE game_configs SET ai_difficulty='impossible' WHERE game_key IN ('chess','xiangqi','caro')");
+}
+export function isAiPlayer(userId){return userId===AI_PLAYER_ID;}
+
+async function getAiDifficulty(gameKey){
+  if(MAX_AI_GAMES.has(gameKey))return 'impossible';
+  const {rows}=await pool.query('SELECT ai_difficulty FROM game_configs WHERE game_key=$1',[gameKey]);
+  return rows[0]?.ai_difficulty||'nightmare';
 }
 
-/**
- * Returns true if the given userId is the AI player.
- */
-export function isAiPlayer(userId) {
-  return userId === AI_PLAYER_ID;
-}
-
-// ─── AI Difficulty Loading ──────────────────────────────────────────────────────
-
-/**
- * Query ai_difficulty from game_configs for a given gameKey.
- * Falls back to 'nightmare' if not found.
- */
-async function getAiDifficulty(gameKey) {
-  const { rows } = await pool.query(
-    'SELECT ai_difficulty FROM game_configs WHERE game_key = $1',
-    [gameKey]
-  );
-  return rows[0]?.ai_difficulty || 'nightmare';
-}
-
-// ─── Move Enumeration ───────────────────────────────────────────────────────────
-
-/**
- * Enumerate all legal moves for a given player in the current state.
- * Strategy: generate all candidate actions and filter via game.apply().
- */
-export function enumerateLegalMoves(game, state, playerIndex) {
-  const key = game.key;
-
-  // Generate candidate moves based on game type
-  const candidates = generateCandidates(key, state, playerIndex);
-
-  // Filter to only legal moves by trying apply()
-  const legal = [];
-  for (const action of candidates) {
-    try {
-      game.apply(state, action, playerIndex);
-      legal.push(action);
-    } catch (e) {
-      if (e instanceof GameRuleError) continue;
-      throw e; // re-throw unexpected errors
-    }
+export function enumerateLegalMoves(game,state,playerIndex){
+  const candidates=generateCandidates(game.key,state,playerIndex),legal=[];
+  for(const action of candidates){
+    try{game.apply(state,action,playerIndex);legal.push(action);}catch(e){if(e instanceof GameRuleError)continue;throw e;}
   }
   return legal;
 }
 
-/**
- * Generate candidate action objects for each game type.
- */
-function generateCandidates(key, state, playerIndex) {
-  switch (key) {
+function generateCandidates(key,state,playerIndex){
+  switch(key){
     case 'ttt':
-      // index 0-8, only empty cells
-      return state.board
-        .map((v, i) => (v == null ? { index: i } : null))
-        .filter(Boolean);
-
-    case 'caro':
-      // index 0-224, only empty cells
-      return state.board
-        .map((v, i) => (v == null ? { index: i } : null))
-        .filter(Boolean);
-
-    case 'connect4':
-      // col 0-6, only non-full columns
-      return Array.from({ length: 7 }, (_, col) => ({ col }))
-        .filter(a => state.board[a.col] == null); // top row of column is empty
-
-    case 'reversi':
-      // index 0-63, only empty cells (apply will validate flips)
-      return state.board
-        .map((v, i) => (v == null ? { index: i } : null))
-        .filter(Boolean);
-
-    case 'rps':
-      // All three choices
-      return [{ choice: 'rock' }, { choice: 'paper' }, { choice: 'scissors' }];
-
-    case 'dots': {
-      // All valid edges that haven't been drawn
-      const D = state.dots || 5;
-      const candidates = [];
-      // Horizontal edges
-      for (let r = 0; r < D; r++) {
-        for (let c = 0; c < D - 1; c++) {
-          candidates.push({ orientation: 'h', r, c });
-        }
-      }
-      // Vertical edges
-      for (let r = 0; r < D - 1; r++) {
-        for (let c = 0; c < D; c++) {
-          candidates.push({ orientation: 'v', r, c });
-        }
-      }
-      // Filter out already-drawn edges
-      const edgeSet = new Set(state.edges || []);
-      return candidates.filter(a => !edgeSet.has(`${a.orientation}:${a.r}:${a.c}`));
+    case 'caro': return state.board.map((v,i)=>v==null?{index:i}:null).filter(Boolean);
+    case 'connect4': return Array.from({length:7},(_,col)=>({col})).filter(a=>state.board[a.col]==null);
+    case 'reversi': return state.board.map((v,i)=>v==null?{index:i}:null).filter(Boolean);
+    case 'rps': return [{choice:'rock'},{choice:'paper'},{choice:'scissors'}];
+    case 'dots':{
+      const D=state.dots||5,out=[],edgeSet=new Set(state.edges||[]);
+      for(let r=0;r<D;r++)for(let c=0;c<D-1;c++)if(!edgeSet.has(`h:${r}:${c}`))out.push({orientation:'h',r,c});
+      for(let r=0;r<D-1;r++)for(let c=0;c<D;c++)if(!edgeSet.has(`v:${r}:${c}`))out.push({orientation:'v',r,c});
+      return out;
     }
-
-    case 'battleship': {
-      // index 0-63, only cells not yet shot
-      const shots = state.shots[playerIndex];
-      return shots
-        .map((v, i) => (v === 0 ? { index: i } : null))
-        .filter(Boolean);
+    case 'battleship':{
+      const shots=state.shots[playerIndex];return shots.map((v,i)=>v===0?{index:i}:null).filter(Boolean);
     }
-
-    case 'chess': {
-      // Generate moves using piece movement rules (no brute force)
-      const WHITE = new Set(['♙', '♖', '♘', '♗', '♕', '♔']);
-      const BLACK = new Set(['♟', '♜', '♞', '♝', '♛', '♚']);
-      const ownSet = playerIndex === 0 ? WHITE : BLACK;
-      const colorOf = p => WHITE.has(p) ? 0 : BLACK.has(p) ? 1 : null;
-      const candidates = [];
-      for (let from = 0; from < 64; from++) {
-        const p = state.board[from];
-        if (!ownSet.has(p)) continue;
-        const r = Math.floor(from / 8), c = from % 8;
-        const add = (rr, cc) => { if (rr >= 0 && rr <= 7 && cc >= 0 && cc <= 7) { const to = rr * 8 + cc; if (colorOf(state.board[to]) !== playerIndex) candidates.push({ from, to }); } };
-        const slide = (dirs) => { for (const [dr, dc] of dirs) { let rr = r + dr, cc2 = c + dc; while (rr >= 0 && rr <= 7 && cc2 >= 0 && cc2 <= 7) { const to = rr * 8 + cc2; if (state.board[to] == null) { candidates.push({ from, to }); } else { if (colorOf(state.board[to]) !== playerIndex) candidates.push({ from, to }); break; } rr += dr; cc2 += dc; } } };
-        if (p === '♙' || p === '♟') { const d = p === '♙' ? -1 : 1, start = p === '♙' ? 6 : 1; const nr = r + d; if (nr >= 0 && nr < 8) { if (state.board[nr * 8 + c] == null) { candidates.push({ from, to: nr * 8 + c }); if (r === start && state.board[(r + 2 * d) * 8 + c] == null) candidates.push({ from, to: (r + 2 * d) * 8 + c }); } for (const dc of [-1, 1]) { const cc2 = c + dc; if (cc2 >= 0 && cc2 < 8 && state.board[nr * 8 + cc2] != null && colorOf(state.board[nr * 8 + cc2]) !== playerIndex) candidates.push({ from, to: nr * 8 + cc2 }); } } }
-        else if (p === '♘' || p === '♞') for (const [dr, dc] of [[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]]) add(r + dr, c + dc);
-        else if (p === '♗' || p === '♝') slide([[1,1],[1,-1],[-1,1],[-1,-1]]);
-        else if (p === '♖' || p === '♜') slide([[1,0],[-1,0],[0,1],[0,-1]]);
-        else if (p === '♕' || p === '♛') slide([[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]);
-        else if (p === '♔' || p === '♚') for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]) add(r + dr, c + dc);
-      }
-      return candidates;
-    }
-
-    case 'xiangqi': {
-      // Generate moves using piece movement rules (no brute force)
-      const red = new Set(['帥', '仕', '相', '俥', '傌', '炮', '兵']);
-      const black = new Set(['將', '士', '象', '車', '馬', '砲', '卒']);
-      const ownSet = playerIndex === 0 ? red : black;
-      const sd = p => red.has(p) ? 0 : black.has(p) ? 1 : null;
-      const R2 = 10, C2 = 9;
-      const candidates = [];
-      for (let from = 0; from < R2 * C2; from++) {
-        const p = state.board[from];
-        if (!ownSet.has(p)) continue;
-        const r = Math.floor(from / C2), c = from % C2;
-        const tryAdd = (rr, cc) => { if (rr < 0 || rr >= R2 || cc < 0 || cc >= C2) return; const to = rr * C2 + cc; if (sd(state.board[to]) !== playerIndex) candidates.push({ from, to }); };
-        if ('車俥'.includes(p)) { for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) { let rr = r + dr, cc2 = c + dc; while (rr >= 0 && rr < R2 && cc2 >= 0 && cc2 < C2) { const to = rr * C2 + cc2; if (state.board[to] == null) { candidates.push({ from, to }); } else { if (sd(state.board[to]) !== playerIndex) candidates.push({ from, to }); break; } rr += dr; cc2 += dc; } } }
-        else if ('砲炮'.includes(p)) { for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) { let rr = r + dr, cc2 = c + dc, jumped = false; while (rr >= 0 && rr < R2 && cc2 >= 0 && cc2 < C2) { const to = rr * C2 + cc2; if (!jumped) { if (state.board[to] == null) candidates.push({ from, to }); else jumped = true; } else { if (state.board[to] != null) { if (sd(state.board[to]) !== playerIndex) candidates.push({ from, to }); break; } } rr += dr; cc2 += dc; } } }
-        else if ('馬傌'.includes(p)) { for (const [dr, dc, lr, lc] of [[2,1,1,0],[2,-1,1,0],[-2,1,-1,0],[-2,-1,-1,0],[1,2,0,1],[1,-2,0,-1],[-1,2,0,1],[-1,-2,0,-1]]) { if (state.board[(r + lr) * C2 + (c + lc)] != null) continue; tryAdd(r + dr, c + dc); } }
-        else if ('象相'.includes(p)) { const limit = p === '象' ? 4 : 5; for (const [dr, dc] of [[2,2],[2,-2],[-2,2],[-2,-2]]) { const rr = r + dr, cc2 = c + dc; if (rr < 0 || rr >= R2 || cc2 < 0 || cc2 >= C2) continue; if (p === '象' && rr > limit) continue; if (p === '相' && rr < limit) continue; if (state.board[(r + dr / 2) * C2 + (c + dc / 2)] != null) continue; tryAdd(rr, cc2); } }
-        else if ('士仕'.includes(p)) { const s = playerIndex; for (const [dr, dc] of [[1,1],[1,-1],[-1,1],[-1,-1]]) { const rr = r + dr, cc2 = c + dc; const inPalace = s === 1 ? rr <= 2 : rr >= 7; if (inPalace && cc2 >= 3 && cc2 <= 5) tryAdd(rr, cc2); } }
-        else if ('將帥'.includes(p)) { const s = playerIndex; for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) { const rr = r + dr, cc2 = c + dc; const inPalace = s === 1 ? rr <= 2 : rr >= 7; if (inPalace && cc2 >= 3 && cc2 <= 5) tryAdd(rr, cc2); } }
-        else if (p === '卒') { if (r < 5) tryAdd(r + 1, c); else { tryAdd(r + 1, c); tryAdd(r, c - 1); tryAdd(r, c + 1); } }
-        else if (p === '兵') { if (r > 4) tryAdd(r - 1, c); else { tryAdd(r - 1, c); tryAdd(r, c - 1); tryAdd(r, c + 1); } }
-      }
-      return candidates;
-    }
-
-    default:
-      return [];
+    case 'chess': return chessCandidates(state,playerIndex);
+    case 'xiangqi': return xiangqiCandidates(state,playerIndex);
+    default:return [];
   }
 }
 
-// ─── Best Move Selection ────────────────────────────────────────────────────────
-
-/**
- * Select the best move based on game-specific strategy.
- * - ttt, connect4: minimax with alpha-beta pruning
- * - reversi, caro: heuristic/positional scoring
- * - chess, xiangqi: material + positional evaluation
- * - rps, battleship, dots: random
- */
-function selectBestMove(game, state, aiPlayerIndex, legalMoves) {
-  const key = game.key;
-
-  switch (key) {
-    case 'ttt':
-      return minimaxTTT(game, state, aiPlayerIndex, legalMoves);
-    case 'connect4':
-      return minimaxConnect4(game, state, aiPlayerIndex, legalMoves);
-    case 'reversi':
-      return heuristicReversi(game, state, aiPlayerIndex, legalMoves);
-    case 'caro':
-      return heuristicCaro(game, state, aiPlayerIndex, legalMoves);
-    case 'chess':
-      return fastChessMove(game, state, aiPlayerIndex, legalMoves);
-    case 'xiangqi':
-      return fastXiangqiMove(game, state, aiPlayerIndex, legalMoves);
-    case 'rps':
-    case 'battleship':
-    case 'dots':
-    default:
-      return randomChoice(legalMoves);
+const CW=new Set(['♙','♖','♘','♗','♕','♔']),CB=new Set(['♟','♜','♞','♝','♛','♚']);
+const chessSide=p=>CW.has(p)?0:CB.has(p)?1:null;
+function chessCandidates(state,playerIndex){
+  const own=playerIndex===0?CW:CB,out=[],board=state.board;
+  for(let from=0;from<64;from++){
+    const p=board[from];if(!own.has(p))continue;const r=Math.floor(from/8),c=from%8;
+    const add=(rr,cc)=>{if(rr<0||rr>7||cc<0||cc>7)return false;const to=rr*8+cc,side=chessSide(board[to]);if(board[to]==null){out.push({from,to});return true;}if(side!==playerIndex)out.push({from,to});return false;};
+    const slide=dirs=>{for(const[dr,dc]of dirs){let rr=r+dr,cc=c+dc;while(add(rr,cc)){rr+=dr;cc+=dc;}}};
+    if(p==='♙'||p==='♟'){
+      const d=p==='♙'?-1:1,start=p==='♙'?6:1,nr=r+d;if(nr>=0&&nr<8){if(board[nr*8+c]==null){out.push({from,to:nr*8+c});if(r===start&&board[(r+2*d)*8+c]==null)out.push({from,to:(r+2*d)*8+c});}for(const dc of[-1,1]){const cc=c+dc;if(cc>=0&&cc<8&&board[nr*8+cc]!=null&&chessSide(board[nr*8+cc])!==playerIndex)out.push({from,to:nr*8+cc});}}
+    }else if(p==='♘'||p==='♞')for(const[dr,dc]of[[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]])add(r+dr,c+dc);
+    else if(p==='♗'||p==='♝')slide([[1,1],[1,-1],[-1,1],[-1,-1]]);
+    else if(p==='♖'||p==='♜')slide([[1,0],[-1,0],[0,1],[0,-1]]);
+    else if(p==='♕'||p==='♛')slide([[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]);
+    else if(p==='♔'||p==='♚')for(const[dr,dc]of[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]])add(r+dr,c+dc);
   }
+  return out;
 }
 
-// ─── TTT Minimax ────────────────────────────────────────────────────────────────
-
-function minimaxTTT(game, state, aiPlayerIndex, legalMoves) {
-  let bestScore = -Infinity;
-  let bestMove = legalMoves[0];
-
-  for (const move of legalMoves) {
-    const result = game.apply(state, move, aiPlayerIndex);
-    const score = minimaxTTTScore(game, result.state, aiPlayerIndex, false, result.result);
-    if (score > bestScore) {
-      bestScore = score;
-      bestMove = move;
-    }
+const XR=new Set(['帥','仕','相','俥','傌','炮','兵']),XB=new Set(['將','士','象','車','馬','砲','卒']);
+const xSide=p=>XR.has(p)?0:XB.has(p)?1:null;
+function xiangqiCandidates(state,playerIndex){
+  const own=playerIndex===0?XR:XB,board=state.board,R=10,C=9,out=[];
+  const inb=(r,c)=>r>=0&&r<R&&c>=0&&c<C;
+  for(let from=0;from<R*C;from++){
+    const p=board[from];if(!own.has(p))continue;const r=Math.floor(from/C),c=from%C;
+    const add=(rr,cc)=>{if(!inb(rr,cc))return;const to=rr*C+cc;if(xSide(board[to])!==playerIndex)out.push({from,to});};
+    if('車俥'.includes(p))for(const[dr,dc]of[[1,0],[-1,0],[0,1],[0,-1]]){let rr=r+dr,cc=c+dc;while(inb(rr,cc)){const to=rr*C+cc;if(board[to]==null)out.push({from,to});else{if(xSide(board[to])!==playerIndex)out.push({from,to});break;}rr+=dr;cc+=dc;}}
+    else if('砲炮'.includes(p))for(const[dr,dc]of[[1,0],[-1,0],[0,1],[0,-1]]){let rr=r+dr,cc=c+dc,jump=false;while(inb(rr,cc)){const to=rr*C+cc;if(!jump){if(board[to]==null)out.push({from,to});else jump=true;}else if(board[to]!=null){if(xSide(board[to])!==playerIndex)out.push({from,to});break;}rr+=dr;cc+=dc;}}
+    else if('馬傌'.includes(p))for(const[dr,dc,lr,lc]of[[2,1,1,0],[2,-1,1,0],[-2,1,-1,0],[-2,-1,-1,0],[1,2,0,1],[1,-2,0,-1],[-1,2,0,1],[-1,-2,0,-1]]){const legR=r+lr,legC=c+lc;if(!inb(legR,legC)||board[legR*C+legC]!=null)continue;add(r+dr,c+dc);}
+    else if('象相'.includes(p))for(const[dr,dc]of[[2,2],[2,-2],[-2,2],[-2,-2]]){const rr=r+dr,cc=c+dc;if(!inb(rr,cc))continue;if(p==='象'&&rr>4)continue;if(p==='相'&&rr<5)continue;if(board[(r+dr/2)*C+(c+dc/2)]==null)add(rr,cc);}
+    else if('士仕'.includes(p))for(const[dr,dc]of[[1,1],[1,-1],[-1,1],[-1,-1]]){const rr=r+dr,cc=c+dc,palace=playerIndex===1?rr<=2:rr>=7;if(palace&&cc>=3&&cc<=5)add(rr,cc);}
+    else if('將帥'.includes(p))for(const[dr,dc]of[[1,0],[-1,0],[0,1],[0,-1]]){const rr=r+dr,cc=c+dc,palace=playerIndex===1?rr<=2:rr>=7;if(palace&&cc>=3&&cc<=5)add(rr,cc);}
+    else if(p==='卒'){add(r+1,c);if(r>=5){add(r,c-1);add(r,c+1);}}
+    else if(p==='兵'){add(r-1,c);if(r<=4){add(r,c-1);add(r,c+1);}}
   }
-  return bestMove;
+  return out;
 }
 
-function minimaxTTTScore(game, state, aiPlayerIndex, isMaximizing, result) {
-  // Terminal check
-  if (result) {
-    if (result.winnerIndex === aiPlayerIndex) return 10;
-    if (result.winnerIndex === null) return 0;
-    return -10;
+function randomChoice(arr){return arr[crypto.randomInt(arr.length)];}
+function checkDeadline(deadline){if(Date.now()>deadline)throw SEARCH_TIMEOUT;}
+
+// ----- Caro MAX ---------------------------------------------------------------
+const CN=15,CDIRS=[[1,0],[0,1],[1,1],[1,-1]],MATE=10_000_000;
+function caroWinAt(board,index,player){
+  const r=Math.floor(index/CN),c=index%CN;
+  for(const[dr,dc]of CDIRS){let n=1;for(const s of[-1,1]){let rr=r+dr*s,cc=c+dc*s;while(rr>=0&&rr<CN&&cc>=0&&cc<CN&&board[rr*CN+cc]===player){n++;rr+=dr*s;cc+=dc*s;}}if(n>=5)return true;}return false;
+}
+function caroRelevant(board,radius=2){
+  const set=new Set();let occupied=0;
+  for(let i=0;i<board.length;i++)if(board[i]!=null){occupied++;const r=Math.floor(i/CN),c=i%CN;for(let dr=-radius;dr<=radius;dr++)for(let dc=-radius;dc<=radius;dc++){const rr=r+dr,cc=c+dc;if(rr>=0&&rr<CN&&cc>=0&&cc<CN){const x=rr*CN+cc;if(board[x]==null)set.add(x);}}}
+  if(!occupied)return [112];return [...set];
+}
+function caroLineFeatures(board,index,player,dr,dc){
+  const r=Math.floor(index/CN),c=index%CN;let left=0,right=0,open=0;
+  let rr=r-dr,cc=c-dc;while(rr>=0&&rr<CN&&cc>=0&&cc<CN&&board[rr*CN+cc]===player){left++;rr-=dr;cc-=dc;}if(rr>=0&&rr<CN&&cc>=0&&cc<CN&&board[rr*CN+cc]==null)open++;
+  rr=r+dr;cc=c+dc;while(rr>=0&&rr<CN&&cc>=0&&cc<CN&&board[rr*CN+cc]===player){right++;rr+=dr;cc+=dc;}if(rr>=0&&rr<CN&&cc>=0&&cc<CN&&board[rr*CN+cc]==null)open++;
+  return {len:left+1+right,open};
+}
+function caroThreatScore(board,index,player){
+  if(board[index]!=null)return -Infinity;board[index]=player;let score=0,open3=0,open4=0;
+  for(const[dr,dc]of CDIRS){const f=caroLineFeatures(board,index,player,dr,dc);if(f.len>=5){board[index]=null;return MATE;}if(f.len===4&&f.open===2){score+=500000;open4++;}else if(f.len===4&&f.open===1)score+=90000;else if(f.len===3&&f.open===2){score+=30000;open3++;}else if(f.len===3&&f.open===1)score+=5000;else if(f.len===2&&f.open===2)score+=900;else if(f.len===2&&f.open===1)score+=180;else if(f.len===1&&f.open===2)score+=20;}
+  if(open4>=1&&open3>=1)score+=250000;if(open3>=2)score+=120000;
+  const r=Math.floor(index/CN),c=index%CN;score+=Math.max(0,14-(Math.abs(r-7)+Math.abs(c-7)))*2;board[index]=null;return score;
+}
+function caroOrderedMoves(board,player,limit){
+  const opp=1-player,moves=caroRelevant(board,2).map(index=>({index,score:caroThreatScore(board,index,player)+1.12*caroThreatScore(board,index,opp)}));
+  moves.sort((a,b)=>b.score-a.score);return moves.slice(0,limit).map(x=>x.index);
+}
+function caroLeaf(board,ai){
+  const a=caroOrderedMoves(board,ai,4).map(i=>caroThreatScore(board,i,ai)),o=caroOrderedMoves(board,1-ai,4).map(i=>caroThreatScore(board,i,1-ai));
+  return (a[0]||0)+.35*(a[1]||0)-1.08*(o[0]||0)-.42*(o[1]||0);
+}
+function caroSearch(board,current,ai,depth,alpha,beta,deadline,ply=0){
+  checkDeadline(deadline);if(depth<=0)return caroLeaf(board,ai);
+  const maximizing=current===ai,limit=depth>=4?8:depth===3?10:12,moves=caroOrderedMoves(board,current,limit);if(!moves.length)return 0;
+  let best=maximizing?-Infinity:Infinity;
+  for(const index of moves){checkDeadline(deadline);board[index]=current;if(caroWinAt(board,index,current)){const v=current===ai?MATE-ply:-MATE+ply;board[index]=null;return v;}const v=caroSearch(board,1-current,ai,depth-1,alpha,beta,deadline,ply+1);board[index]=null;
+    if(maximizing){if(v>best)best=v;if(best>alpha)alpha=best;}else{if(v<best)best=v;if(best<beta)beta=best;}if(alpha>=beta)break;
   }
-
-  const currentPlayer = state.turn;
-  const moves = state.board
-    .map((v, i) => (v == null ? { index: i } : null))
-    .filter(Boolean);
-
-  if (moves.length === 0) return 0;
-
-  if (isMaximizing) {
-    let best = -Infinity;
-    for (const move of moves) {
-      const applied = game.apply(state, move, currentPlayer);
-      const score = minimaxTTTScore(game, applied.state, aiPlayerIndex, false, applied.result);
-      best = Math.max(best, score);
-    }
-    return best;
-  } else {
-    let best = Infinity;
-    for (const move of moves) {
-      const applied = game.apply(state, move, currentPlayer);
-      const score = minimaxTTTScore(game, applied.state, aiPlayerIndex, true, applied.result);
-      best = Math.min(best, score);
-    }
-    return best;
+  return best;
+}
+function maxCaroMove(state,ai,legalMoves){
+  const board=[...state.board],opp=1-ai,deadline=Date.now()+650;
+  let candidates=caroOrderedMoves(board,ai,18);if(!candidates.length)candidates=legalMoves.map(x=>x.index);
+  // Forced win first.
+  for(const i of candidates){board[i]=ai;const win=caroWinAt(board,i,ai);board[i]=null;if(win)return {index:i};}
+  // Forced block second.
+  const oppWins=[];for(const i of caroRelevant(board,2)){if(board[i]!=null)continue;board[i]=opp;const win=caroWinAt(board,i,opp);board[i]=null;if(win)oppWins.push(i);}if(oppWins.length===1)return {index:oppWins[0]};
+  let best={index:candidates[0]},bestScore=-Infinity;
+  for(const depth of [2,3,4,5]){
+    try{let localBest=best,localScore=-Infinity;for(const i of candidates){checkDeadline(deadline);board[i]=ai;let v;if(caroWinAt(board,i,ai))v=MATE;else v=caroSearch(board,opp,ai,depth-1,-Infinity,Infinity,deadline,1);board[i]=null;if(v>localScore){localScore=v;localBest={index:i};}}best=localBest;bestScore=localScore;if(Math.abs(bestScore)>MATE/2)break;}catch(e){if(e!==SEARCH_TIMEOUT)throw e;break;}
   }
+  return best;
 }
 
-// ─── Connect4 Minimax with Alpha-Beta ───────────────────────────────────────────
-
-const C4_COLS = 7;
-const C4_ROWS = 6;
-const C4_MAX_DEPTH = 5;
-
-function minimaxConnect4(game, state, aiPlayerIndex, legalMoves) {
-  let bestScore = -Infinity;
-  let bestMove = legalMoves[0];
-
-  for (const move of legalMoves) {
-    try {
-      const result = game.apply(state, move, aiPlayerIndex);
-      const score = c4AlphaBeta(
-        game, result.state, aiPlayerIndex, C4_MAX_DEPTH - 1,
-        -Infinity, Infinity, false, result.result
-      );
-      if (score > bestScore) {
-        bestScore = score;
-        bestMove = move;
-      }
-    } catch { continue; }
+// ----- Chess / Xiangqi MAX -----------------------------------------------------
+const CHESS_VALUES={'♙':100,'♖':500,'♘':320,'♗':335,'♕':925,'♔':30000,'♟':100,'♜':500,'♞':320,'♝':335,'♛':925,'♚':30000};
+const XQ_VALUES={'帥':30000,'仕':220,'相':220,'俥':950,'傌':470,'炮':500,'兵':110,'將':30000,'士':220,'象':220,'車':950,'馬':470,'砲':500,'卒':110};
+function pieceValue(kind,p){return (kind==='chess'?CHESS_VALUES:XQ_VALUES)[p]||0;}
+function boardSide(kind,p){return kind==='chess'?chessSide(p):xSide(p);}
+function materialEval(state,ai,kind){
+  let score=0,pieces=0;const board=state.board;
+  for(let i=0;i<board.length;i++){const p=board[i];if(!p)continue;pieces++;const s=boardSide(kind,p),v=pieceValue(kind,p);let pos=0;
+    if(kind==='chess'){
+      const r=Math.floor(i/8),c=i%8,center=7-(Math.abs(r-3.5)+Math.abs(c-3.5));
+      if('♘♞♗♝'.includes(p))pos+=center*5;if('♙'.includes(p))pos+=(6-r)*6;if('♟'.includes(p))pos+=(r-1)*6;if('♕♛'.includes(p))pos+=center*1.5;
+    }else{
+      const r=Math.floor(i/9),c=i%9,center=8-(Math.abs(c-4)+Math.abs(r-4.5)*.35);
+      if('馬傌砲炮'.includes(p))pos+=center*5;if(p==='兵')pos+=(9-r)*5+(r<=4?35:0);if(p==='卒')pos+=r*5+(r>=5?35:0);if('車俥'.includes(p))pos+=center*2;
+    }
+    score+=(s===ai?1:-1)*(v+pos);
   }
-  return bestMove;
+  return {score,pieces};
 }
-
-function c4AlphaBeta(game, state, aiPlayerIndex, depth, alpha, beta, isMaximizing, result) {
-  if (result) {
-    if (result.winnerIndex === aiPlayerIndex) return 1000 + depth;
-    if (result.winnerIndex === null) return 0;
-    return -1000 - depth;
-  }
-  if (depth === 0) return c4Evaluate(state, aiPlayerIndex);
-
-  const currentPlayer = state.turn;
-  const moves = [];
-  for (let col = 0; col < C4_COLS; col++) {
-    if (state.board[col] == null) moves.push({ col });
-  }
-  if (moves.length === 0) return 0;
-
-  if (isMaximizing) {
-    let value = -Infinity;
-    for (const move of moves) {
-      try {
-        const applied = game.apply(state, move, currentPlayer);
-        const score = c4AlphaBeta(game, applied.state, aiPlayerIndex, depth - 1, alpha, beta, false, applied.result);
-        value = Math.max(value, score);
-        alpha = Math.max(alpha, value);
-        if (alpha >= beta) break;
-      } catch { continue; }
-    }
-    return value;
-  } else {
-    let value = Infinity;
-    for (const move of moves) {
-      try {
-        const applied = game.apply(state, move, currentPlayer);
-        const score = c4AlphaBeta(game, applied.state, aiPlayerIndex, depth - 1, alpha, beta, true, applied.result);
-        value = Math.min(value, score);
-        beta = Math.min(beta, value);
-        if (alpha >= beta) break;
-      } catch { continue; }
-    }
-    return value;
-  }
+function moveOrderScore(state,m,kind){
+  const target=state.board[m.to],actor=state.board[m.from];let s=target?pieceValue(kind,target)*16-pieceValue(kind,actor):0;
+  if(kind==='chess'){const r=Math.floor(m.to/8),c=m.to%8;s+=20-(Math.abs(r-3.5)+Math.abs(c-3.5))*3;if(actor==='♙'&&r===0||actor==='♟'&&r===7)s+=800;}
+  else {const r=Math.floor(m.to/9),c=m.to%9;s+=14-(Math.abs(c-4)+Math.abs(r-4.5)*.3)*2;}
+  return s;
 }
-
-function c4Evaluate(state, aiPlayerIndex) {
-  const opponent = 1 - aiPlayerIndex;
-  let score = 0;
-
-  // Center column preference
-  const centerCol = 3;
-  for (let r = 0; r < C4_ROWS; r++) {
-    const cell = state.board[r * C4_COLS + centerCol];
-    if (cell === aiPlayerIndex) score += 3;
-    else if (cell === opponent) score -= 3;
-  }
-
-  // Evaluate all windows of 4
-  // Horizontal
-  for (let r = 0; r < C4_ROWS; r++) {
-    for (let c = 0; c <= C4_COLS - 4; c++) {
-      score += c4WindowScore(state.board, r * C4_COLS + c, 1, aiPlayerIndex);
-    }
-  }
-  // Vertical
-  for (let r = 0; r <= C4_ROWS - 4; r++) {
-    for (let c = 0; c < C4_COLS; c++) {
-      score += c4WindowScore(state.board, r * C4_COLS + c, C4_COLS, aiPlayerIndex);
-    }
-  }
-  // Diagonal (down-right)
-  for (let r = 0; r <= C4_ROWS - 4; r++) {
-    for (let c = 0; c <= C4_COLS - 4; c++) {
-      score += c4WindowScore(state.board, r * C4_COLS + c, C4_COLS + 1, aiPlayerIndex);
-    }
-  }
-  // Diagonal (down-left)
-  for (let r = 0; r <= C4_ROWS - 4; r++) {
-    for (let c = 3; c < C4_COLS; c++) {
-      score += c4WindowScore(state.board, r * C4_COLS + c, C4_COLS - 1, aiPlayerIndex);
-    }
-  }
-
+function orderedMoves(game,state,side,kind,limit=Infinity){const moves=enumerateLegalMoves(game,state,side);moves.sort((a,b)=>moveOrderScore(state,b,kind)-moveOrderScore(state,a,kind));return moves.slice(0,limit);}
+function staticEval(game,state,ai,kind){
+  const base=materialEval(state,ai,kind);let score=base.score;
+  // Cheap pseudo-mobility keeps evaluation fast enough to reach deeper plies.
+  try{const turn=state.turn,own=generateCandidates(kind,state,ai).length,opp=generateCandidates(kind,state,1-ai).length;score+=(own-opp)*(kind==='chess'?2.4:1.8);if(state.inCheck)score+=(turn===ai?-65:65);}catch{}
   return score;
 }
-
-function c4WindowScore(board, start, step, aiPlayerIndex) {
-  let ai = 0, opp = 0, empty = 0;
-  for (let i = 0; i < 4; i++) {
-    const cell = board[start + i * step];
-    if (cell === aiPlayerIndex) ai++;
-    else if (cell === 1 - aiPlayerIndex) opp++;
-    else empty++;
+function terminalScore(result,ai,depth){if(!result)return null;if(result.winnerIndex==null)return 0;return result.winnerIndex===ai?1_000_000+depth:-1_000_000-depth;}
+function alphaBeta(game,state,ai,kind,depth,alpha,beta,deadline,ply=0){
+  checkDeadline(deadline);if(depth<=0)return staticEval(game,state,ai,kind);const side=state.turn;if(side!==0&&side!==1)return staticEval(game,state,ai,kind);
+  const maximizing=side===ai,branchLimit=depth>=4?(kind==='chess'?18:20):depth===3?(kind==='chess'?24:28):40,moves=orderedMoves(game,state,side,kind,branchLimit);if(!moves.length)return staticEval(game,state,ai,kind);
+  let best=maximizing?-Infinity:Infinity;
+  for(const move of moves){checkDeadline(deadline);let applied;try{applied=game.apply(state,move,side);}catch{continue;}const t=terminalScore(applied.result,ai,depth);const v=t==null?alphaBeta(game,applied.state,ai,kind,depth-1,alpha,beta,deadline,ply+1):t;
+    if(maximizing){if(v>best)best=v;if(best>alpha)alpha=best;}else{if(v<best)best=v;if(best<beta)beta=best;}if(alpha>=beta)break;
   }
-  if (ai === 4) return 100;
-  if (ai === 3 && empty === 1) return 5;
-  if (ai === 2 && empty === 2) return 2;
-  if (opp === 3 && empty === 1) return -4;
-  return 0;
+  return best;
+}
+function maxBoardMove(game,state,ai,legalMoves,kind){
+  const info=materialEval(state,ai,kind),budget=kind==='chess'?900:1050,deadline=Date.now()+budget;
+  let root=[...legalMoves].sort((a,b)=>moveOrderScore(state,b,kind)-moveOrderScore(state,a,kind)),best=root[0],bestScore=-Infinity;
+  // Always take a forced mate/capture immediately if available.
+  for(const m of root){try{const a=game.apply(state,m,ai);if(a.result?.winnerIndex===ai)return m;}catch{}}
+  const maxDepth=info.pieces<=12?5:4;
+  for(let depth=1;depth<=maxDepth;depth++){
+    try{let localBest=best,localScore=-Infinity;for(const m of root){checkDeadline(deadline);let a;try{a=game.apply(state,m,ai);}catch{continue;}const t=terminalScore(a.result,ai,depth);const v=t==null?alphaBeta(game,a.state,ai,kind,depth-1,-Infinity,Infinity,deadline,1):t;if(v>localScore){localScore=v;localBest=m;}}best=localBest;bestScore=localScore;
+      // Principal variation first on the next iteration for better pruning.
+      root=[best,...root.filter(m=>m!==best)];if(bestScore>900000)break;
+    }catch(e){if(e!==SEARCH_TIMEOUT)throw e;break;}
+  }
+  return best;
 }
 
-// ─── Reversi Heuristic ──────────────────────────────────────────────────────────
+// ----- Other games (kept deterministic/strong enough) -------------------------
+function tttBest(game,state,ai,legalMoves){
+  function mm(s,side){const moves=enumerateLegalMoves(game,s,side);if(!moves.length)return 0;let best=side===ai?-Infinity:Infinity;for(const m of moves){const a=game.apply(s,m,side);let v;if(a.result)v=a.result.winnerIndex==null?0:a.result.winnerIndex===ai?100:-100;else v=mm(a.state,a.state.turn);best=side===ai?Math.max(best,v):Math.min(best,v);}return best;}
+  let best=legalMoves[0],score=-Infinity;for(const m of legalMoves){const a=game.apply(state,m,ai),v=a.result?(a.result.winnerIndex===ai?100:0):mm(a.state,a.state.turn);if(v>score){score=v;best=m;}}return best;
+}
+function connect4Best(game,state,ai,legalMoves){
+  const deadline=Date.now()+220;let best=legalMoves[0],bestScore=-Infinity;
+  const evalState=s=>{let sc=0;for(let i=0;i<s.board.length;i++){if(s.board[i]===ai)sc+=(i%7===3?7:2);else if(s.board[i]===1-ai)sc-=(i%7===3?7:2);}return sc;};
+  function ab(s,side,d,a,b){checkDeadline(deadline);if(d<=0)return evalState(s);const moves=enumerateLegalMoves(game,s,side).sort((x,y)=>Math.abs(x.col-3)-Math.abs(y.col-3));let val=side===ai?-Infinity:Infinity;for(const m of moves){const x=game.apply(s,m,side);const v=x.result?(x.result.winnerIndex==null?0:x.result.winnerIndex===ai?100000:-100000):ab(x.state,x.state.turn,d-1,a,b);if(side===ai){val=Math.max(val,v);a=Math.max(a,val);}else{val=Math.min(val,v);b=Math.min(b,val);}if(a>=b)break;}return val;}
+  try{for(const m of legalMoves){const x=game.apply(state,m,ai),v=x.result?100000:ab(x.state,x.state.turn,4,-Infinity,Infinity);if(v>bestScore){bestScore=v;best=m;}}}catch(e){if(e!==SEARCH_TIMEOUT)throw e;}return best;
+}
+function reversiBest(game,state,ai,legalMoves){const weights=[120,-20,20,5,5,20,-20,120,-20,-40,-5,-5,-5,-5,-40,-20,20,-5,15,3,3,15,-5,20,5,-5,3,3,3,3,-5,5,5,-5,3,3,3,3,-5,5,20,-5,15,3,3,15,-5,20,-20,-40,-5,-5,-5,-5,-40,-20,120,-20,20,5,5,20,-20,120];let best=legalMoves[0],score=-Infinity;for(const m of legalMoves){const a=game.apply(state,m,ai);let s=0;a.state.board.forEach((v,i)=>{if(v===ai)s+=weights[i];else if(v===1-ai)s-=weights[i];});if(s>score){score=s;best=m;}}return best;}
 
-const REVERSI_WEIGHTS = [
-  120, -20,  20,   5,   5,  20, -20, 120,
-  -20, -40,  -5,  -5,  -5,  -5, -40, -20,
-   20,  -5,  15,   3,   3,  15,  -5,  20,
-    5,  -5,   3,   3,   3,   3,  -5,   5,
-    5,  -5,   3,   3,   3,   3,  -5,   5,
-   20,  -5,  15,   3,   3,  15,  -5,  20,
-  -20, -40,  -5,  -5,  -5,  -5, -40, -20,
-  120, -20,  20,   5,   5,  20, -20, 120
-];
-
-function heuristicReversi(game, state, aiPlayerIndex, legalMoves) {
-  let bestScore = -Infinity;
-  let bestMove = legalMoves[0];
-
-  for (const move of legalMoves) {
-    try {
-      const applied = game.apply(state, move, aiPlayerIndex);
-      const score = reversiEvaluate(applied.state, aiPlayerIndex);
-      if (score > bestScore) {
-        bestScore = score;
-        bestMove = move;
-      }
-    } catch { continue; }
+function selectBestMove(game,state,ai,legalMoves){
+  switch(game.key){
+    case 'caro':return maxCaroMove(state,ai,legalMoves);
+    case 'chess':return maxBoardMove(game,state,ai,legalMoves,'chess');
+    case 'xiangqi':return maxBoardMove(game,state,ai,legalMoves,'xiangqi');
+    case 'ttt':return tttBest(game,state,ai,legalMoves);
+    case 'connect4':return connect4Best(game,state,ai,legalMoves);
+    case 'reversi':return reversiBest(game,state,ai,legalMoves);
+    default:return randomChoice(legalMoves);
   }
-  return bestMove;
 }
 
-function reversiEvaluate(state, aiPlayerIndex) {
-  const opponent = 1 - aiPlayerIndex;
-  let score = 0;
-
-  // Positional scoring
-  for (let i = 0; i < 64; i++) {
-    if (state.board[i] === aiPlayerIndex) score += REVERSI_WEIGHTS[i];
-    else if (state.board[i] === opponent) score -= REVERSI_WEIGHTS[i];
-  }
-
-  // Mobility bonus: count available moves for AI vs opponent
-  const aiMoves = enumerateLegalMovesQuick('reversi', state, aiPlayerIndex);
-  const oppMoves = enumerateLegalMovesQuick('reversi', state, opponent);
-  score += (aiMoves - oppMoves) * 10;
-
-  return score;
-}
-
-/** Quick mobility count for reversi without generating full action objects */
-function enumerateLegalMovesQuick(key, state, playerIndex) {
-  if (key !== 'reversi') return 0;
-  const N = 8;
-  const DIRS = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
-  let count = 0;
-  for (let index = 0; index < 64; index++) {
-    if (state.board[index] != null) continue;
-    const r = Math.floor(index / N), c = index % N;
-    let valid = false;
-    for (const [dr, dc] of DIRS) {
-      let rr = r + dr, cc = c + dc, line = 0;
-      while (rr >= 0 && rr < N && cc >= 0 && cc < N && state.board[rr * N + cc] === (1 - playerIndex)) {
-        line++; rr += dr; cc += dc;
-      }
-      if (line > 0 && rr >= 0 && rr < N && cc >= 0 && cc < N && state.board[rr * N + cc] === playerIndex) {
-        valid = true;
-        break;
-      }
-    }
-    if (valid) count++;
-  }
-  return count;
-}
-
-// ─── Caro Heuristic ─────────────────────────────────────────────────────────────
-
-function heuristicCaro(game, state, aiPlayerIndex, legalMoves) {
-  // Only consider moves adjacent to existing pieces (within 2 cells)
-  const relevantMoves = getRelevantCaroMoves(state, legalMoves);
-  const movesToEvaluate = relevantMoves.length > 0 ? relevantMoves : legalMoves.slice(0, 50);
-
-  let bestScore = -Infinity;
-  let bestMove = movesToEvaluate[0];
-
-  for (const move of movesToEvaluate) {
-    const score = caroEvaluateMove(state, move.index, aiPlayerIndex);
-    if (score > bestScore) {
-      bestScore = score;
-      bestMove = move;
-    }
-  }
-  return bestMove;
-}
-
-function getRelevantCaroMoves(state, legalMoves) {
-  const N = 15;
-  const adjacent = new Set();
-
-  for (let i = 0; i < state.board.length; i++) {
-    if (state.board[i] == null) continue;
-    const r = Math.floor(i / N), c = i % N;
-    for (let dr = -2; dr <= 2; dr++) {
-      for (let dc = -2; dc <= 2; dc++) {
-        const nr = r + dr, nc = c + dc;
-        if (nr >= 0 && nr < N && nc >= 0 && nc < N) {
-          const idx = nr * N + nc;
-          if (state.board[idx] == null) adjacent.add(idx);
-        }
-      }
-    }
-  }
-
-  if (adjacent.size === 0) {
-    // First move — play center
-    return [{ index: Math.floor(N * N / 2) }];
-  }
-
-  return legalMoves.filter(m => adjacent.has(m.index));
-}
-
-function caroEvaluateMove(state, index, aiPlayerIndex) {
-  const N = 15;
-  const r = Math.floor(index / N), c = index % N;
-  const opponent = 1 - aiPlayerIndex;
-  let score = 0;
-
-  // Evaluate placing AI piece here
-  const directions = [[1, 0], [0, 1], [1, 1], [1, -1]];
-
-  for (const [dr, dc] of directions) {
-    // Count consecutive AI pieces in this direction
-    const aiLine = countLine(state.board, N, r, c, dr, dc, aiPlayerIndex);
-    const oppLine = countLine(state.board, N, r, c, dr, dc, opponent);
-
-    // Score AI offensive potential
-    score += lineScore(aiLine);
-    // Score defensive value (blocking opponent)
-    score += lineScore(oppLine) * 0.9;
-  }
-
-  // Slight center preference
-  const centerDist = Math.abs(r - 7) + Math.abs(c - 7);
-  score += Math.max(0, 14 - centerDist) * 0.1;
-
-  return score;
-}
-
-function countLine(board, N, r, c, dr, dc, player) {
-  let count = 0;
-  let openEnds = 0;
-
-  // Forward direction
-  let rr = r + dr, cc = c + dc, fwd = 0;
-  while (rr >= 0 && rr < N && cc >= 0 && cc < N && board[rr * N + cc] === player) {
-    fwd++; rr += dr; cc += dc;
-  }
-  if (rr >= 0 && rr < N && cc >= 0 && cc < N && board[rr * N + cc] == null) openEnds++;
-
-  // Backward direction
-  rr = r - dr; cc = c - dc;
-  let bwd = 0;
-  while (rr >= 0 && rr < N && cc >= 0 && cc < N && board[rr * N + cc] === player) {
-    bwd++; rr -= dr; cc -= dc;
-  }
-  if (rr >= 0 && rr < N && cc >= 0 && cc < N && board[rr * N + cc] == null) openEnds++;
-
-  count = fwd + bwd;
-  return { count, openEnds };
-}
-
-function lineScore(line) {
-  const { count, openEnds } = line;
-  if (count >= 4) return 100000; // winning or near-winning
-  if (count === 3 && openEnds === 2) return 10000;
-  if (count === 3 && openEnds === 1) return 1000;
-  if (count === 2 && openEnds === 2) return 500;
-  if (count === 2 && openEnds === 1) return 50;
-  if (count === 1 && openEnds === 2) return 10;
-  if (count === 1 && openEnds === 1) return 3;
-  return 0;
-}
-
-// ─── Chess Heuristic ────────────────────────────────────────────────────────────
-
-const CHESS_PIECE_VALUES = {
-  '♙': 100, '♖': 500, '♘': 320, '♗': 330, '♕': 900, '♔': 20000,
-  '♟': 100, '♜': 500, '♞': 320, '♝': 330, '♛': 900, '♚': 20000
-};
-const WHITE_PIECES = new Set(['♙', '♖', '♘', '♗', '♕', '♔']);
-const BLACK_PIECES = new Set(['♟', '♜', '♞', '♝', '♛', '♚']);
-
-function fastChessMove(game, state, aiPlayerIndex, legalMoves) {
-  // Fast 1-ply: prefer captures by piece value, then random
-  const captures = [], others = [];
-  for (const m of legalMoves) {
-    const target = state.board[m.to];
-    if (target != null) captures.push({ move: m, value: CHESS_PIECE_VALUES[target] || 0 });
-    else others.push(m);
-  }
-  // If can capture king, do it
-  for (const c of captures) if (c.value >= 20000) return c.move;
-  // Prefer highest value capture
-  if (captures.length) { captures.sort((a, b) => b.value - a.value); return captures[0].move; }
-  // Otherwise random
-  return randomChoice(others.length ? others : legalMoves);
-}
-
-function fastXiangqiMove(game, state, aiPlayerIndex, legalMoves) {
-  // Fast 1-ply: prefer captures by piece value, then random
-  const captures = [], others = [];
-  for (const m of legalMoves) {
-    const target = state.board[m.to];
-    if (target != null) captures.push({ move: m, value: XIANGQI_VALUES[target] || 0 });
-    else others.push(m);
-  }
-  // If can capture general/king, do it
-  for (const c of captures) if (c.value >= 20000) return c.move;
-  // Prefer highest value capture
-  if (captures.length) { captures.sort((a, b) => b.value - a.value); return captures[0].move; }
-  // Otherwise random
-  return randomChoice(others.length ? others : legalMoves);
-}
-
-// ─── Xiangqi Heuristic ──────────────────────────────────────────────────────────
-
-const XIANGQI_VALUES = {
-  '帥': 20000, '仕': 200, '相': 200, '俥': 900, '傌': 450, '炮': 450, '兵': 100,
-  '將': 20000, '士': 200, '象': 200, '車': 900, '馬': 450, '砲': 450, '卒': 100
-};
-const RED_PIECES = new Set(['帥', '仕', '相', '俥', '傌', '炮', '兵']);
-const BLACK_XQ_PIECES = new Set(['將', '士', '象', '車', '馬', '砲', '卒']);
-
-// fastXiangqiMove is defined above — remove old heuristic
-// (heuristicXiangqi replaced by fastXiangqiMove in selectBestMove)
-
-// xiangqiEvaluate removed — fastXiangqiMove uses direct capture preference
-
-// ─── Utility Functions ──────────────────────────────────────────────────────────
-
-function randomChoice(arr) {
-  return arr[crypto.randomInt(arr.length)];
-}
-
-function shuffleAndTake(arr, n) {
-  const copy = [...arr];
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = crypto.randomInt(i + 1);
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy.slice(0, n);
-}
-
-// ─── Main AI Move Computation ───────────────────────────────────────────────────
-
-/**
- * Compute AI move for a given game state.
- *
- * @param {object} state - Current game state where state.turn === aiPlayerIndex
- * @param {string} gameKey - The game key (e.g., 'ttt', 'connect4')
- * @param {number} aiPlayerIndex - The player index of the AI (0 or 1)
- * @returns {Promise<{state: object, result: object|null, action: object}>}
- */
-export async function computeAiMove(state, gameKey, aiPlayerIndex) {
-  const game = getGame(gameKey);
-  const difficulty = await getAiDifficulty(gameKey);
-
-  // Get all legal moves for the AI
-  const legalMoves = enumerateLegalMoves(game, state, aiPlayerIndex);
-
-  if (legalMoves.length === 0) {
-    // No valid moves — for reversi this means pass (handled by engine).
-    // For other games, if no moves exist, the game should be finalized.
-    // Return state unchanged with no action — caller should handle.
-    return { state, result: null, action: null };
-  }
-
-  // Select move based on difficulty
+export async function computeAiMove(state,gameKey,aiPlayerIndex){
+  const game=getGame(gameKey),difficulty=await getAiDifficulty(gameKey),legalMoves=enumerateLegalMoves(game,state,aiPlayerIndex);
+  if(!legalMoves.length)return {state,result:null,action:null};
   let selectedAction;
-  switch (difficulty) {
-    case 'impossible':
-      selectedAction = selectBestMove(game, state, aiPlayerIndex, legalMoves);
-      break;
-    case 'nightmare':
-      // 90% best, 10% random
-      selectedAction = Math.random() < 0.9
-        ? selectBestMove(game, state, aiPlayerIndex, legalMoves)
-        : randomChoice(legalMoves);
-      break;
-    case 'hard':
-    default:
-      // 70% best, 30% random
-      selectedAction = Math.random() < 0.7
-        ? selectBestMove(game, state, aiPlayerIndex, legalMoves)
-        : randomChoice(legalMoves);
-      break;
-  }
-
-  // Apply the selected move through game engine
-  const applied = game.apply(state, selectedAction, aiPlayerIndex);
-  return { state: applied.state, result: applied.result || null, action: selectedAction };
+  if(MAX_AI_GAMES.has(gameKey)||difficulty==='impossible')selectedAction=selectBestMove(game,state,aiPlayerIndex,legalMoves);
+  else if(difficulty==='nightmare')selectedAction=Math.random()<.9?selectBestMove(game,state,aiPlayerIndex,legalMoves):randomChoice(legalMoves);
+  else selectedAction=Math.random()<.7?selectBestMove(game,state,aiPlayerIndex,legalMoves):randomChoice(legalMoves);
+  const applied=game.apply(state,selectedAction,aiPlayerIndex);return {state:applied.state,result:applied.result||null,action:selectedAction};
 }
