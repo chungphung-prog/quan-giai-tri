@@ -9,6 +9,39 @@ const REVEAL_MS=3000;
 const RESULT_MS=2000;
 const TOTAL_MS=CYCLE_MS+REVEAL_MS+RESULT_MS;
 
+const MATCH_LIMIT_MS=25*60*1000;
+const MATCH_TIME_FUTURE_TOLERANCE_MS=2*60*1000;
+
+function normalizeMatchCreatedAt(match){
+  if(!match||!match.createdAt)return match;
+  const parsed=Date.parse(match.createdAt);
+  if(!Number.isFinite(parsed))return match;
+  const current=Date.now();
+  let corrected=parsed;
+  // MySQL/Node can occasionally serialize local VN time as UTC (Z), making
+  // the browser see the match start ~7 hours in the future. Convert that
+  // impossible future creation time back to the browser's local wall time.
+  if(parsed>current+MATCH_TIME_FUTURE_TOLERANCE_MS){
+    const localCorrected=parsed+(new Date().getTimezoneOffset()*60000);
+    if(localCorrected<=current+MATCH_TIME_FUTURE_TOLERANCE_MS&&current-localCorrected<24*60*60*1000){
+      corrected=localCorrected;
+    }
+  }
+  // A match cannot be created in the future; cap tiny clock drift at now.
+  if(corrected>current)corrected=current;
+  match.createdAt=new Date(corrected).toISOString();
+  return match;
+}
+
+function clampMatchTimerDom(){
+  const timer=qs('#matchTimer b');
+  if(!timer)return;
+  const m=String(timer.textContent||'').match(/^(\d+):(\d{2})$/);
+  if(!m)return;
+  const total=(Number(m[1])*60)+Number(m[2]);
+  if(total>25*60)timer.textContent='25:00';
+}
+
 let latestMatch=null;
 let flow=null;
 let renderTimer=null;
@@ -54,6 +87,7 @@ function beginFlow(match){
 }
 
 function acceptSnapshot(match){
+  normalizeMatchCreatedAt(match);
   if(!match||match.gameKey!=='rps')return;
   latestMatch=match;
   if(!isCurrentRps(match))return;
@@ -211,8 +245,17 @@ function installFetchTap(){
     try{
       const input=args[0];
       const url=typeof input==='string'?input:input?.url||'';
-      if(/\/api\/matches\/[0-9a-f-]+(?:\?|$)/i.test(url)){
-        response.clone().json().then(data=>acceptSnapshot(data?.match)).catch(()=>{});
+      if(/\/api\/matches\/[^/?]+(?:\?|$)/i.test(url)){
+        const data=await response.clone().json();
+        if(data?.match){
+          normalizeMatchCreatedAt(data.match);
+          acceptSnapshot(data.match);
+          return new Response(JSON.stringify(data),{
+            status:response.status,
+            statusText:response.statusText,
+            headers:response.headers
+          });
+        }
       }
     }catch{}
     return response;
@@ -228,17 +271,17 @@ function installSocketTap(){
     const realEmit=socket.emit.bind(socket);
     socket.on=function(event,handler){
       if(event==='match:update'&&typeof handler==='function'){
-        return realOn(event,payload=>{acceptSnapshot(payload?.match);const out=handler(payload);queueMicrotask(renderFlow);return out;});
+        return realOn(event,payload=>{normalizeMatchCreatedAt(payload?.match);acceptSnapshot(payload?.match);const out=handler(payload);queueMicrotask(renderFlow);return out;});
       }
       return realOn(event,handler);
     };
     socket.emit=function(event,...rest){
       if(event==='match:action'&&typeof rest[rest.length-1]==='function'){
         const ack=rest[rest.length-1];
-        rest[rest.length-1]=payload=>{acceptSnapshot(payload?.match);const out=ack(payload);queueMicrotask(renderFlow);return out;};
+        rest[rest.length-1]=payload=>{normalizeMatchCreatedAt(payload?.match);acceptSnapshot(payload?.match);const out=ack(payload);queueMicrotask(renderFlow);return out;};
       }else if(event==='match:join'&&typeof rest[rest.length-1]==='function'){
         const ack=rest[rest.length-1];
-        rest[rest.length-1]=payload=>{acceptSnapshot(payload?.match);const out=ack(payload);queueMicrotask(()=>{patchWaitingPhase();renderFlow();});return out;};
+        rest[rest.length-1]=payload=>{normalizeMatchCreatedAt(payload?.match);acceptSnapshot(payload?.match);const out=ack(payload);queueMicrotask(()=>{patchWaitingPhase();renderFlow();});return out;};
       }
       return realEmit(event,...rest);
     };
@@ -258,5 +301,6 @@ installFetchTap();
 installSocketTap();
 installModalGuard();
 installPublicResultGuard();
+setInterval(clampMatchTimerDom,120);
 window.addEventListener('hashchange',handleRouteChange);
 })();
